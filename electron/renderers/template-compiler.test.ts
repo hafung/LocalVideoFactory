@@ -38,11 +38,31 @@ describe('fixed composition compiler', () => {
     expect(html).toContain('data-composition-id="voxweave-captions"');
     expect(html).toContain('data-timeline-role="captions"');
     expect(html).toContain('timedLayer("#kinetic-layer>[data-animate-start]"');
-    expect(html).toContain('tl.set(el,{autoAlpha:1},start)');
+    expect(html).toContain('tl.fromTo(el,{autoAlpha:1}');
     expect(html).toContain('class="clip" src="./assets/narration.wav"');
   });
 
-  it('escapes HTML-significant characters', () => {
+  it('keeps source offsets while scaling visuals, captions and composition duration at 2x', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'voxweave-speed-')); temporary.push(root);
+    const audioPath = path.join(root, 'voice.wav'); await writeFile(audioPath, wav());
+    const videoPath = path.join(root, 'source.mp4'); await writeFile(videoPath, 'video');
+    const draft = createDraftEditPlan({ id: 'speed', script: '测试倍速。', voiceId: 'vivian', sourceVideoPath: videoPath });
+    const plan = resolveEditPlan(draft, { sourceMetadata: { durationMs: 5000, hasAudio: true }, narration: {
+      audioPath, durationMs: 4000, segments: [{ id: 'scene-001', text: '测试倍速。', startMs: 0, endMs: 4000, audioPath }]
+    }});
+    plan.output.playbackRate = 2;
+    plan.scenes[0].visual.sourceInMs = 1000; plan.scenes[0].visual.sourceOutMs = 5000;
+    const prepared = await compileFixedTemplate(plan, path.join(root, 'preview'));
+    const html = await readFile(prepared.entryUrl, 'utf8');
+    expect(prepared.durationMs).toBe(2000);
+    expect(html).toContain('data-playback-rate="2"');
+    expect(html).toContain('data-duration="2"');
+    expect(html).toContain('data-media-start="1"');
+    expect(html).toContain('data-animate-duration="1"');
+    expect(html).toContain('data-animate-start="1"');
+  });
+
+  it('escapes HTML-significant characters' , () => {
     expect(escapeHtml(`<script>"x" & 'y'</script>`)).toBe('&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
   });
 

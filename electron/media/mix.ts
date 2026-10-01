@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 
 export interface MixOptions {
+  playbackRate?: number;
   narrationVolume?: number;
   original?: { path: string; volume: number; ducking: boolean };
   bgm?: { path: string; volume: number; ducking: boolean };
@@ -41,8 +42,11 @@ export function mixArguments(narration: string, output: string, durationMs: numb
   const mixInputs = ['voice', ...tracks.map(track => track === 'original' && options.original?.ducking ? 'originalDuck'
     : track === 'bgm' && options.bgm?.ducking ? 'bgmDuck' : track)];
   if (mixInputs.length > 1) filters.push(`${mixInputs.map(track => `[${track}]`).join('')}amix=inputs=${mixInputs.length}:duration=first:normalize=0[mixed]`);
-  filters.push(`[${mixInputs.length > 1 ? 'mixed' : 'voice'}]atrim=duration=${duration},alimiter=limit=0.95:level=0[out]`);
-  return [...args, '-filter_complex', filters.join(';'), '-map', '[out]', '-t', String(duration), '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', output];
+  const rate = options.playbackRate ?? 1;
+  if (!Number.isFinite(rate) || rate < .25 || rate > 4) throw new Error('倍速必须在 0.25–4 之间');
+  const tempo = rate < .5 ? `atempo=0.5,atempo=${rate / .5}` : rate > 2 ? `atempo=2,atempo=${rate / 2}` : `atempo=${rate}`;
+  filters.push(`[${mixInputs.length > 1 ? 'mixed' : 'voice'}]atrim=duration=${duration},alimiter=limit=0.95:level=0${rate === 1 ? '' : ',' + tempo}[out]`);
+  return [...args, '-filter_complex', filters.join(';'), '-map', '[out]', '-t', String(duration / (options.playbackRate ?? 1)), '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', output];
 }
 
 export async function mixNarration(ffmpeg: string, narration: string, output: string, durationMs: number,

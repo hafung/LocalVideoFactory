@@ -30,6 +30,7 @@ const api: VoxWeaveApi = {
   openSource: url => ipcRenderer.invoke('library:open-source', url),
   updateAudio: (projectId, settings) => ipcRenderer.invoke('composition:audio', projectId, settings),
   exportVideo: projectId => ipcRenderer.invoke('composition:export', projectId),
+  exportArtifact: (projectId, kind) => ipcRenderer.invoke('composition:export-artifact', projectId, kind),
   cancelExport: jobId => ipcRenderer.invoke('composition:cancel-export', jobId),
   onExportProgress: listener => {
     const handler = (_event: Electron.IpcRendererEvent, payload: import('../shared/types.js').ExportProgress) => listener(payload);

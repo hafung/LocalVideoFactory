@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { EditPlan } from '../../shared/edit-plan.js';
 import { assertResolvedPlan, type PreparedComposition } from './renderer.js';
@@ -23,14 +23,24 @@ function safeExtension(file: string): string {
   return /^\.[a-z0-9]{1,8}$/u.test(extension) ? extension : '.bin';
 }
 
+/** @hyperframes/core 0.8.38 advertises every finite timeline as at least one
+ * second. That leaves sub-second compositions blank after their real end.
+ * Keep its transport contract but use our 30-fps minimum of one frame. */
+function patchRuntimeDuration(runtime: string): string {
+  const floor = 'Math.max(1,k||1,A??0)';
+  if (runtime.split(floor).length !== 2) throw new Error('渲染运行库已变化，请更新短视频时长适配');
+  return runtime.replace(floor, 'Math.max(1/30,k||1/30,A??0)');
+}
+
 function cueMarkup(plan: EditPlan): string {
+  const rate = plan.output.playbackRate;
   let captionIndex = 0;
   return plan.captions.flatMap(cue => cue.tokens.map((active, activeIndex) => {
     const words = cue.tokens.map((token, index) =>
       `<span${index === activeIndex ? ' class="active"' : ''}>${escapeHtml(token.text)}</span>`
     ).join('');
     const id = `caption-${captionIndex++}`;
-    return `<div id="${id}" class="caption ${escapeHtml(plan.template.captionStyle)}" data-animate-start="${seconds(active.startMs)}" data-animate-duration="${seconds(active.endMs - active.startMs)}" aria-label="${escapeHtml(cue.text)}">${words}</div>`;
+    return `<div id="${id}" class="caption ${escapeHtml(plan.template.captionStyle)}" data-animate-start="${seconds(active.startMs / rate)}" data-animate-duration="${seconds((active.endMs - active.startMs) / rate)}" aria-label="${escapeHtml(cue.text)}">${words}</div>`;
   })).join('\n');
 }
 
@@ -65,13 +75,14 @@ export async function compileFixedTemplate(
   }
 ): Promise<PreparedComposition> {
   assertResolvedPlan(plan);
+  const rate = plan.output.playbackRate;
   const assetsDir = path.join(workspace, 'assets');
   await mkdir(assetsDir, { recursive: true });
 
   const runtimeSource = require.resolve('@hyperframes/core/runtime');
   const gsapSource = require.resolve('gsap/dist/gsap.min.js');
   await Promise.all([
-    copyFile(runtimeSource, path.join(workspace, 'hyperframe.runtime.iife.js')),
+    readFile(runtimeSource, 'utf8').then(runtime => writeFile(path.join(workspace, 'hyperframe.runtime.iife.js'), patchRuntimeDuration(runtime))),
     copyFile(gsapSource, path.join(workspace, 'gsap.min.js')),
     copyFile(plan.narration.audioPath, path.join(assetsDir, `narration${safeExtension(plan.narration.audioPath)}`))
   ]);
@@ -83,7 +94,7 @@ export async function compileFixedTemplate(
     const scene = plan.scenes[index];
     const duration = scene.endMs - scene.startMs;
     if (scene.visual.type === 'kinetic-text') {
-      kinetics.push(kineticMarkup(scene.script, scene.startMs, duration, index));
+      kinetics.push(kineticMarkup(scene.script, scene.startMs / rate, duration / rate, index));
       continue;
     }
     let last = index;
@@ -108,25 +119,25 @@ export async function compileFixedTemplate(
     }
     const tag = scene.visual.type === 'image' ? 'img' : 'video';
     const mediaStart = scene.visual.sourceInMs ? ` data-media-start="${seconds(scene.visual.sourceInMs)}"` : '';
-    const mediaAttributes = tag === 'video' ? ' muted playsinline' : '';
-    visuals.push(`<${tag} id="visual-${index}" class="clip visual ${scene.visual.fit}" src="./${escapeHtml(relative)}" preload="auto" data-start="${seconds(scene.startMs)}" data-duration="${seconds(plan.scenes[last].endMs - scene.startMs)}"${mediaStart} data-track-index="1"${mediaAttributes}></${tag}>`);
+    const mediaAttributes = tag === 'video' ? ` muted playsinline data-playback-rate="${rate}"` : '';
+    visuals.push(`<${tag} id="visual-${index}" class="clip visual ${scene.visual.fit}" src="./${escapeHtml(relative)}" preload="auto" data-start="${seconds(scene.startMs / rate)}" data-duration="${seconds((plan.scenes[last].endMs - scene.startMs) / rate)}"${mediaStart} data-track-index="1"${mediaAttributes}></${tag}>`);
     index = last;
   }
 
-  const durationSeconds = seconds(plan.narration.durationMs);
+  const durationSeconds = seconds(plan.narration.durationMs / rate);
   const narrationName = `narration${safeExtension(plan.narration.audioPath)}`;
   const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:">
 <style>${compositionCss(plan)}</style><script src="./gsap.min.js"></script><script>window.__timelines=window.__timelines||{};</script></head>
-<body><main id="stage" data-composition-id="voxweave-root" data-start="0" data-width="${plan.canvas.width}" data-height="${plan.canvas.height}">
+<body><main id="stage" data-composition-id="voxweave-root" data-start="0" data-duration="${durationSeconds}" data-width="${plan.canvas.width}" data-height="${plan.canvas.height}">
 ${visuals.join('\n')}
 <div id="kinetic-layer" data-composition-id="voxweave-kinetics" data-start="0" data-track-index="2">${kinetics.join('\n')}</div>
 <div class="shade"></div>
 <div id="caption-layer" data-composition-id="voxweave-captions" data-start="0" data-track-index="3" data-timeline-role="captions">${cueMarkup(plan)}</div>
 <audio id="narration" class="clip" src="./assets/${narrationName}" preload="auto" data-start="0" data-duration="${durationSeconds}" data-track-index="4"></audio>
 </main><script>
-function timedLayer(selector,duration){const tl=gsap.timeline({paused:true});for(const el of document.querySelectorAll(selector)){const start=Number(el.dataset.animateStart);const length=Number(el.dataset.animateDuration);tl.set(el,{autoAlpha:0},0);tl.set(el,{autoAlpha:1},start);tl.set(el,{autoAlpha:0},start+length)}tl.set({}, {}, duration);return tl}
+function timedLayer(selector,duration){const tl=gsap.timeline({paused:true});for(const el of document.querySelectorAll(selector)){const start=Number(el.dataset.animateStart);const length=Number(el.dataset.animateDuration);tl.set(el,{autoAlpha:0},0);tl.fromTo(el,{autoAlpha:1},{autoAlpha:1,duration:length,immediateRender:false,ease:"none"},start);tl.set(el,{autoAlpha:0},start+length)}tl.set({}, {}, duration);return tl}
 window.__timelines["voxweave-kinetics"]=timedLayer("#kinetic-layer>[data-animate-start]",${durationSeconds});
 window.__timelines["voxweave-captions"]=timedLayer("#caption-layer>[data-animate-start]",${durationSeconds});
 const tl=gsap.timeline({paused:true});tl.set({}, {}, ${durationSeconds});window.__timelines["voxweave-root"]=tl;</script>
@@ -134,9 +145,9 @@ const tl=gsap.timeline({paused:true});tl.set({}, {}, ${durationSeconds});window.
   const entryPath = path.join(workspace, 'index.html');
   await writeFile(entryPath, html, 'utf8');
   await writeFile(path.join(workspace, 'composition.json'), `${JSON.stringify({
-    planId: plan.id, revision: plan.revision, template: plan.template, durationMs: plan.narration.durationMs
+    planId: plan.id, revision: plan.revision, template: plan.template, durationMs: Math.round(plan.narration.durationMs / rate)
   }, null, 2)}\n`, 'utf8');
-  return { entryUrl: entryPath, workspace, durationMs: plan.narration.durationMs };
+  return { entryUrl: entryPath, workspace, durationMs: Math.round(plan.narration.durationMs / rate) };
 }
 
 export { escapeHtml };

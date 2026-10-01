@@ -89,6 +89,20 @@ describe('offline resource verifier', () => {
     expect(manifest.files[0].sha256).toMatch(/^[a-f0-9]{64}$/u);
   });
 
+  it('verifies the shared codec layout and rejects missing shared weights', async () => {
+    const root = await fixture();
+    const shared = path.join(root, 'models/qwen3-tts-tokenizer'); await mkdir(shared);
+    for (const file of ['config.json', 'configuration.json', 'preprocessor_config.json', 'model.safetensors']) {
+      await writeFile(path.join(shared, file), `shared:${file}`);
+    }
+    for (const model of ['qwen3-tts-1.7b-base', 'qwen3-tts-1.7b-customvoice']) {
+      await rm(path.join(root, 'models', model, 'speech_tokenizer'), { recursive: true });
+    }
+    await execFileAsync(process.execPath, [path.resolve('scripts/verify-offline-resources.mjs'), '--root', root]);
+    await rm(path.join(shared, 'model.safetensors'));
+    await expect(execFileAsync(process.execPath, [path.resolve('scripts/verify-offline-resources.mjs'), '--root', root])).rejects.toMatchObject({ code: 1 });
+  });
+
   it('fails before packaging when a required binary is absent', async () => {
     const root = await fixture();
     await rm(path.join(root, 'engine/qwen_tts.exe'));

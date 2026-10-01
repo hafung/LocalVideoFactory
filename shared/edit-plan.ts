@@ -145,6 +145,7 @@ export const EditPlanSchema = z.object({
   }).strict().default({ narrationVolume: 1, originalEnabled: false, originalVolume: 0.35, originalDucking: true }),
   output: z.object({
     format: z.literal('mp4'),
+    playbackRate: z.number().min(0.25).max(4).default(1),
     videoCodec: z.enum(['h264', 'hevc']).default('h264'),
     audioCodec: z.literal('aac'),
     outputPath: nonEmptyPath.optional()

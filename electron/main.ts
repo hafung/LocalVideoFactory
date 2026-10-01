@@ -2,10 +2,13 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, safeStorage,
 import Store from 'electron-store';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, rename } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { exportAss, exportSrt } from './composition/subtitle-export.js';
 import { QwenEngine, type EngineConfig } from './engine.js';
 import { planDraft } from './composition/planner.js';
 import { EditPlanStore } from './composition/project-store.js';
@@ -70,7 +73,10 @@ protocol.registerSchemesAsPrivileged([{
 const GenerateCompositionRequestSchema = DraftPlanRequestSchema.extend({
   language: z.enum(LANGUAGES).optional(),
   temperature: z.number().min(0.1).max(1.2).optional(),
-  precision: z.enum(['bf16', 'int8', 'int4']).optional()
+  precision: z.enum(['bf16', 'int8', 'int4']).optional(),
+  bgm: EditPlanSchema.shape.bgm.optional(),
+  audio: EditPlanSchema.shape.audio.optional(),
+  playbackRate: z.number().min(.25).max(4).optional()
 }).strict();
 
 function resourceRoot(): string {
@@ -127,7 +133,7 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
   }
   const request = JSON.stringify({
     script: process.env.VOXWEAVE_COMPOSITION_SMOKE_SCRIPT ?? '你好。', voiceId, aspectRatio: '9:16', captionStyle: 'commerce-bold',
-    language: 'Chinese', precision: 'int8'
+    language: 'Chinese', precision: 'int8', playbackRate: Number(process.env.VOXWEAVE_COMPOSITION_SMOKE_RATE ?? 1)
   });
   const result = await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('composition/player smoke timed out')), 120000);
@@ -232,6 +238,14 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
       setTimeout(poll, 50);
     }; poll();
   })`, true);
+  let artifactResults: unknown;
+  if (process.env.VOXWEAVE_ARTIFACT_SMOKE_DIR) {
+    artifactResults = await window.webContents.executeJavaScript(`(async () => {
+      const outputs = [];
+      for (const kind of ['narration-mp3', 'mixed-mp3', 'srt', 'ass']) outputs.push({ kind, ...await window.voxweave.exportArtifact(${JSON.stringify(result.projectId)}, kind) });
+      return outputs;
+    })()`, true);
+  }
   let exportResult: unknown;
   if (process.env.VOXWEAVE_EXPORT_SMOKE_OUTPUT) {
     exportResult = await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
@@ -249,7 +263,7 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
   await writeFile(resultPath, `${JSON.stringify({
     ok: true, platform: process.platform, arch: process.arch,
     electron: process.versions.electron, chrome: process.versions.chrome,
-    screenshotPath, previewFrames, previewNonDarkPixelRatio, libraryManagerVerified, exportResult, clonedVoice, ...result
+    screenshotPath, previewFrames, previewNonDarkPixelRatio, libraryManagerVerified, exportResult, artifactResults, clonedVoice, ...result
   }, null, 2)}\n`, 'utf8');
 }
 
@@ -447,8 +461,14 @@ if (cliMode) {
     const request = GenerateCompositionRequestSchema.parse(input) as GenerateCompositionRequest;
     const voiceProfile = (settings.get('voiceProfiles') ?? []).find(profile => profile.id === request.voiceId);
     if (voiceProfile && (!voiceProfile.path || !existsSync(voiceProfile.path))) throw new Error('克隆音色文件不存在，请重新克隆');
-    const { language: _language, temperature: _temperature, precision: _precision, ...draftRequest } = request;
-    const plan = planDraft(draftRequest);
+    const { language: _language, temperature: _temperature, precision: _precision, bgm, audio, playbackRate, ...draftRequest } = request;
+    const draft = planDraft(draftRequest);
+    const plan = EditPlanSchema.parse({ ...draft, bgm: bgm ?? draft.bgm,
+      audio: audio ?? draft.audio, output: { ...draft.output, playbackRate: playbackRate ?? 1 } });
+    if (plan.bgm.enabled) {
+      const asset = plan.bgm.assetId && library.byId(plan.bgm.assetId);
+      if (!asset || asset.type !== 'audio' || asset.license.status === 'unknown') throw new Error('请选择授权明确的音频素材');
+    }
     const jobId = randomUUID();
     const controller = new AbortController();
     const modelDir = configuredPaths().modelDir;
@@ -625,9 +645,10 @@ if (cliMode) {
     try {
       const plan = await editPlans.read(id);
       if (!['resolved', 'complete'].includes(plan.status)) throw new Error('请先生成预览');
-      const settings = z.object({ bgm: EditPlanSchema.shape.bgm, audio: EditPlanSchema.shape.audio }).strict().parse(value);
+      const settings = z.object({ bgm: EditPlanSchema.shape.bgm, audio: EditPlanSchema.shape.audio,
+        playbackRate: z.number().min(.25).max(4).optional() }).strict().parse(value);
       const candidate = EditPlanSchema.parse({ ...plan, bgm: settings.bgm, audio: settings.audio, status: 'resolved', revision: plan.revision + 1,
-        updatedAt: new Date().toISOString(), output: { ...plan.output, outputPath: undefined } });
+        updatedAt: new Date().toISOString(), output: { ...plan.output, playbackRate: settings.playbackRate ?? plan.output.playbackRate, outputPath: undefined } });
       if (candidate.bgm.enabled) {
         const asset = candidate.bgm.assetId && library.byId(candidate.bgm.assetId);
         if (!asset || asset.type !== 'audio' || asset.license.status === 'unknown') throw new Error('请选择授权明确的音频素材');
@@ -678,6 +699,49 @@ if (cliMode) {
         .finally(() => { exportJobs.delete(jobId); projectLocks.delete(id); });
       return { jobId };
     } catch (error) { projectLocks.delete(id); throw error; }
+  });
+  ipcMain.handle('composition:export-artifact', async (_event, idValue: unknown, kindValue: unknown) => {
+    const id = projectIdSchema.parse(idValue);
+    const kind = z.enum(['narration-mp3', 'mixed-mp3', 'srt', 'ass']).parse(kindValue);
+    if (projectLocks.has(id)) throw new Error('工程正在处理，请稍后再试');
+    projectLocks.add(id);
+    let temporary: string | undefined;
+    try {
+      const plan = await editPlans.read(id);
+      if (!['resolved', 'complete'].includes(plan.status)) throw new Error('请先生成旁白和字幕');
+      const audio = kind.endsWith('mp3');
+      const extension = audio ? 'mp3' : kind;
+      const name = kind === 'narration-mp3' ? '旁白' : kind === 'mixed-mp3' ? '混合音轨' : '字幕';
+      const smokeDirectory = process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT && process.env.VOXWEAVE_ARTIFACT_SMOKE_DIR;
+      if (smokeDirectory) await mkdir(smokeDirectory, { recursive: true });
+      const result = smokeDirectory ? { canceled: false, filePath: path.join(smokeDirectory, `${kind}.${extension}`) }
+        : await dialog.showSaveDialog({ title: `导出${name}`, defaultPath: `声织${name}.${extension}`,
+        filters: [{ name: extension.toUpperCase(), extensions: [extension] }] });
+      if (result.canceled || !result.filePath) return null;
+      const outputPath = result.filePath;
+      const sourcePaths = [plan.narration.audioPath, plan.input.sourceVideoPath, ...library.list(10000).map(asset => asset.filePath)].filter(Boolean);
+      if (sourcePaths.some(file => path.resolve(file!).toLowerCase() === path.resolve(outputPath).toLowerCase())) throw new Error('导出路径不能覆盖原始素材');
+      temporary = path.join(path.dirname(outputPath), `.voxweave-${randomUUID()}.${extension}`);
+      if (audio) {
+        const ffmpeg = configuredPaths().ffmpegPath;
+        if (!ffmpeg) throw new Error('导出 MP3 需要内置 FFmpeg');
+        const workspace = path.join(projectsRoot, id, 'audio-exports', randomUUID());
+        try {
+          const input = kind === 'mixed-mp3' ? await makeRenderer(plan).prepareAudio(plan, workspace) : plan.narration.audioPath!;
+          const rate = plan.output.playbackRate;
+          const tempo = rate < .5 ? `atempo=0.5,atempo=${rate / .5}` : rate > 2 ? `atempo=2,atempo=${rate / 2}` : `atempo=${rate}`;
+          await promisify(execFile)(ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-vn',
+            ...(kind === 'narration-mp3' && rate !== 1 ? ['-af', tempo] : []), '-c:a', 'libmp3lame', '-b:a', '192k', temporary],
+            { windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+        } finally { await rm(workspace, { recursive: true, force: true }); }
+      } else await writeFile(temporary, kind === 'srt' ? exportSrt(plan) : exportAss(plan), 'utf8');
+      await rename(temporary, outputPath);
+      allowedShellPaths.add(path.resolve(outputPath));
+      return { outputPath };
+    } finally {
+      if (temporary) await rm(temporary, { force: true });
+      projectLocks.delete(id);
+    }
   });
   ipcMain.handle('composition:cancel-export', async (_event, value: unknown) => {
     const id = z.string().uuid().parse(value); const job = exportJobs.get(id);

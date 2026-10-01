@@ -114,7 +114,12 @@ async function main() {
   const root = path.resolve(rootIndex >= 0 ? args[rootIndex + 1] : path.join(process.cwd(), 'resources'));
   const writeManifest = args.includes('--write-manifest');
   const missing = [];
-  for (const relative of REQUIRED_FILES) {
+  const sharedCodec = await stat(path.join(root, 'models/qwen3-tts-tokenizer')).then(info => info.isDirectory()).catch(() => false);
+  const requiredFiles = sharedCodec
+    ? [...REQUIRED_FILES.filter(file => !file.includes('/speech_tokenizer/')),
+      ...['config.json', 'configuration.json', 'preprocessor_config.json', 'model.safetensors'].map(file => `models/qwen3-tts-tokenizer/${file}`)]
+    : REQUIRED_FILES;
+  for (const relative of requiredFiles) {
     try {
       const info = await stat(path.join(root, relative));
       if (!info.isFile() || info.size === 0) missing.push(relative);

@@ -195,6 +195,12 @@ static int load_config(qwen_tts_ctx_t *ctx) {
     snprintf(path, sizeof(path), "%s/speech_tokenizer/config.json", ctx->model_dir);
     json = read_file(path, &len);
     if (!json) {
+        /* Offline bundles share one codec between Base and CustomVoice.
+         * Ordinary Hugging Face model directories retain their local codec. */
+        snprintf(path, sizeof(path), "%s/../qwen3-tts-tokenizer/config.json", ctx->model_dir);
+        json = read_file(path, &len);
+    }
+    if (!json) {
         snprintf(path, sizeof(path), "speech_tokenizer_config.json");
         json = read_file(path, &len);
     }
@@ -647,6 +653,9 @@ qwen_tts_ctx_t *qwen_tts_load_ex(const char *model_dir, int silent, int use_int8
     snprintf(speech_dir, sizeof(speech_dir), "%s/speech_tokenizer", ctx->model_dir);
     ingot_st *st_speech = NULL;
     if (ingot_st_open_dir(&st_speech, speech_dir, st_err, sizeof st_err) != 0) {
+        snprintf(speech_dir, sizeof(speech_dir), "%s/../qwen3-tts-tokenizer", ctx->model_dir);
+    }
+    if (!st_speech && ingot_st_open_dir(&st_speech, speech_dir, st_err, sizeof st_err) != 0) {
         fprintf(stderr, "Error: Failed to load speech tokenizer from %s: %s\n",
                 speech_dir, st_err);
         ingot_st_close(ctx->safetensors);

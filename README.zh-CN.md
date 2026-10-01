@@ -36,6 +36,9 @@
 - BF16 / INT8 / INT4、温度、Top-k、Top-p、随机种子与线程数控制
 - 常见参考音频自动标准化为 24 kHz 单声道 PCM
 - GUI 与 CLI 共用文本解析、推理参数、音频拼接和转码逻辑
+- 成片倍速同时用于预览、MP4、MP3 与字幕导出，变速保留音高
+- 原声、旁白和配乐统一通过“生成视频”更新；只改音轨时复用已有旁白与分镜，完整重新生成也保留音轨选择
+- 单独导出旁白 MP3、混合音轨 MP3、SRT 和带逐词强调的 ASS 字幕
 
 ## 下载并完全离线运行
 
@@ -90,7 +93,7 @@ pnpm verify:resources
 pnpm package:win
 ```
 
-`package:win` 自动构建并生成 `release\VoxWeave-Portable-<version>-x64\VoxWeave.exe`、同名 ZIP 和 SHA-256 文件；`package:win:installer` 会额外请求 NSIS Setup。两者都会先严格校验模型、原生 Qwen 引擎、依赖 DLL、FFmpeg、渲染浏览器和许可证闭包。资源已准备好时无需重新下载。
+`package:win` 自动构建并生成 `release\VoxWeave-Portable-<version>-x64\VoxWeave.exe`、同名 ZIP 和 SHA-256 文件；`package:win:installer` 会额外请求 NSIS Setup。两者都会先严格校验模型、原生 Qwen 引擎、依赖 DLL、FFmpeg、渲染浏览器和许可证闭包。资源已准备好时无需重新下载。打包时两套 1.7B TTS 共享 `models/qwen3-tts-tokenizer` 内的普通文件，减少约 651 MiB 解压体积；无需软链接、首次启动复制或联网。构建前须更新原生引擎以支持该布局，打包会校验引擎能力和共享资源哈希，源码下载目录仍使用原始模型布局。
 
 当前开发发行物为 `release\VoxWeave-Portable-0.2.2-x64` 和同名 ZIP。0.2.1 是旧界面包，顶部“素材库”会直接打开文件选择框；0.2.2 会打开完整素材管理界面。
 

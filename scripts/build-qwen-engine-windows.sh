@@ -106,6 +106,7 @@ SOURCE_TREE_SHA256="$(
 cat > "$BUNDLE/build-info.json" <<EOF
 {
   "engineVersion": "qwen3-tts-c-v0.2.1",
+  "sharedSpeechTokenizer": true,
   "sourceCommit": "$SOURCE_COMMIT",
   "sourceDiffSha256": "$SOURCE_DIFF_SHA256",
   "sourceTreeSha256": "$SOURCE_TREE_SHA256",

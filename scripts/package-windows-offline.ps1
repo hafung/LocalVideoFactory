@@ -50,6 +50,18 @@ try {
   if (-not (Test-Path -LiteralPath $builderCli -PathType Leaf)) { throw "electron-builder CLI not found: $builderCli" }
   $package.build.directories.output = $buildDir
   $package.build.extraResources[0].from = $resourceRoot
+  $package.build | Add-Member -NotePropertyName afterPack -NotePropertyValue (Join-Path $sourceRoot 'scripts\finalize-shared-codec.mjs') -Force
+  $engineInfo = Get-Content (Join-Path $resourceRoot 'engine\build-info.json') -Raw | ConvertFrom-Json
+  if (-not $engineInfo.sharedSpeechTokenizer) { throw 'Rebuild/import the Qwen engine with shared speech tokenizer support before packaging.' }
+  # Package ordinary files once; no symlinks, first-run copying, or online download.
+  $package.build.extraResources[0].filter = @('**/*',
+    '!models/qwen3-tts-1.7b-base/speech_tokenizer/**/*',
+    '!models/qwen3-tts-1.7b-customvoice/speech_tokenizer/**/*')
+  $package.build.extraResources += @{
+    from = (Join-Path $resourceRoot 'models\qwen3-tts-1.7b-customvoice\speech_tokenizer')
+    to = 'models/qwen3-tts-tokenizer'
+    filter = @('**/*')
+  }
   if (-not $package.build.electronDist -and $env:LOCALAPPDATA) {
     $electronPackagePath = Join-Path $projectDir 'node_modules\electron\package.json'
     $electronCacheRoot = Join-Path $env:LOCALAPPDATA 'electron\Cache'

@@ -60,6 +60,8 @@ export function App() {
   const [bgmVolume, setBgmVolume] = useState(.15);
   const [bgmDucking, setBgmDucking] = useState(true);
   const [bgmBusy, setBgmBusy] = useState(false);
+  const [generatePending, setGeneratePending] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [narrationVolume, setNarrationVolume] = useState(1);
   const [originalEnabled, setOriginalEnabled] = useState(false);
   const [originalVolume, setOriginalVolume] = useState(.35);
@@ -104,7 +106,8 @@ export function App() {
     setBgmVolume(plan.bgm.volume); setBgmDucking(plan.bgm.ducking);
     setNarrationVolume(plan.audio.narrationVolume); setOriginalEnabled(plan.audio.originalEnabled);
     setOriginalVolume(plan.audio.originalVolume); setOriginalDucking(plan.audio.originalDucking);
-  }, [plan?.id, plan?.revision]);
+    setPlaybackRate(plan.output.playbackRate);
+  }, [plan?.id]);
 
   useEffect(() => {
     const desktop = api();
@@ -120,6 +123,8 @@ export function App() {
       if (!last || receivedCompositionProgress) return;
       setPlan(last.plan); setProjectId(last.plan.id); setScript(last.plan.input.script);
       setVisualBrief(last.plan.input.visualBrief ?? '');
+      setAspectRatio(`${last.plan.canvas.width === last.plan.canvas.height ? '1:1' : last.plan.canvas.width > last.plan.canvas.height ? '16:9' : '9:16'}`);
+      setCaptionStyle(last.plan.template.captionStyle);
       setSourceVideoPath(last.plan.input.sourceVideoPath); setVoiceId(last.plan.narration.voiceId);
       if (last.preview) setPreview(last.preview);
     }).catch(() => undefined);
@@ -142,17 +147,28 @@ export function App() {
     const playIcon = player.shadowRoot?.querySelector<SVGSVGElement>('.hfp-play-btn .hfp-ico-play svg');
     playIcon?.setAttribute('viewBox', '0 0 24 24');
     playIcon?.querySelector('path')?.setAttribute('d', 'M7 4.5a1.5 1.5 0 0 1 2.3-1.27l11.25 7.5a1.5 1.5 0 0 1 0 2.54l-11.25 7.5A1.5 1.5 0 0 1 7 19.5v-15Z');
-    const ready = () => setPreviewError(undefined);
+    const speedStyle = document.createElement('style');
+    speedStyle.textContent = '.hfp-speed-wrap{display:none}';
+    player.shadowRoot?.appendChild(speedStyle);
+    const ready = () => { player.playbackRate = 1; setPreviewError(undefined); };
     const failed = (event: Event) => setPreviewError((event as CustomEvent<{ message?: string }>).detail?.message ?? '预览加载失败');
     player.addEventListener('ready', ready); player.addEventListener('error', failed);
-    return () => { player.removeEventListener('ready', ready); player.removeEventListener('error', failed); };
+    return () => { player.removeEventListener('ready', ready); player.removeEventListener('error', failed); speedStyle.remove(); };
   }, [preview?.entryUrl]);
 
   const estimatedSeconds = useMemo(() => estimateDuration(script), [script]);
-  const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy;
+  const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending;
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
+  const compositionDirty = !plan || script.trim() !== plan.input.script || visualBrief.trim() !== (plan.input.visualBrief ?? '') ||
+    voiceId !== plan.narration.voiceId || sourceVideoPath !== plan.input.sourceVideoPath || captionStyle !== plan.template.captionStyle ||
+    aspectRatio !== (plan.canvas.width === plan.canvas.height ? '1:1' : plan.canvas.width > plan.canvas.height ? '16:9' : '9:16');
+  const needsGeneration = compositionDirty || audioDirty || !preview;
+  const audioSettings = () => ({
+    bgm: { enabled: !!bgmAsset, assetId: bgmAsset || undefined, volume: bgmVolume, ducking: bgmDucking },
+    audio: { narrationVolume, originalEnabled: !!sourceVideoPath && originalEnabled, originalVolume, originalDucking }
+  });
   const sourceAsset = plan?.input.sourceVideoPath ? assets.find(asset => asset.filePath === plan.input.sourceVideoPath) : undefined;
   const activeStage = stages.findIndex(stage => stage.phase === progress?.phase);
   const originalVideoDurationMs = plan?.input.sourceVideoPath
@@ -170,16 +186,18 @@ export function App() {
       setProgress({ jobId: 'browser', phase: 'error', progress: 0, message: '请在 VoxWeave 桌面应用中运行。', recoverable: true });
       return;
     }
+    if (plan && preview && !compositionDirty && audioDirty) { await applyAudio(); return; }
     if (status.state === 'missing') { setSettingsOpen(true); return; }
+    setGeneratePending(true);
     setPreviewError(undefined); setPreview(undefined); setPlan(undefined);
     setExportProgress(undefined);
     setProgress({ jobId: 'pending', phase: 'drafting', progress: 0.01, message: '正在创建本地工程…' });
     try {
-      const result = await desktop.generateComposition({ script, visualBrief, voiceId, aspectRatio, captionStyle, sourceVideoPath, language: voiceLanguages[voiceId] ?? 'Chinese', precision: 'int8' });
+      const result = await desktop.generateComposition({ script, visualBrief, voiceId, aspectRatio, captionStyle, sourceVideoPath, language: voiceLanguages[voiceId] ?? 'Chinese', precision: 'int8', ...audioSettings(), playbackRate });
       jobRef.current = result.jobId; setJobId(result.jobId); setProjectId(result.projectId);
     } catch (error) {
       setProgress({ jobId: 'failed', phase: 'error', progress: 0, message: error instanceof Error ? error.message : String(error), recoverable: true });
-    }
+    } finally { setGeneratePending(false); }
   }
 
   async function chooseSource() {
@@ -188,6 +206,7 @@ export function App() {
     try {
       const imported = await api()!.importAsset(selected);
       setSourceVideoPath(imported.filePath); setSourceError('');
+      if (imported.hasAudio === false) setOriginalEnabled(false);
       setAssets(await api()!.listAssets());
     } catch (error) { setSourceError(error instanceof Error ? error.message : String(error)); }
   }
@@ -203,23 +222,31 @@ export function App() {
     finally { setCloneBusy(false); }
   }
 
-  async function applyAudio() {
+  async function applyAudio(rate = playbackRate) {
     if (!projectId) return;
     setBgmBusy(true);
     try {
-      const result = await api()!.updateAudio(projectId, {
-        bgm: { enabled: !!bgmAsset, assetId: bgmAsset || undefined, volume: bgmVolume, ducking: bgmDucking },
-        audio: { narrationVolume, originalEnabled, originalVolume, originalDucking }
-      });
+      const result = await api()!.updateAudio(projectId, { ...audioSettings(), playbackRate: rate });
+      setPlaybackRate(rate);
       setPlan(result.plan); setPreview(result.preview); setPreviewError(undefined); setExportProgress(undefined);
     } catch (error) { setPreviewError(error instanceof Error ? error.message : String(error)); }
     finally { setBgmBusy(false); }
   }
   async function exportVideo() {
-    if (!projectId) return;
+    if (!projectId || needsGeneration) return;
     setExportPending(true); setExportProgress(undefined);
     try { const result = await api()!.exportVideo(projectId); if (result) setExportJob(result.jobId); }
     catch (error) { setExportProgress({ jobId: '', phase: 'error', progress: 0, message: error instanceof Error ? error.message : String(error) }); }
+    finally { setExportPending(false); }
+  }
+
+  async function exportArtifact(kind: 'narration-mp3' | 'mixed-mp3' | 'srt' | 'ass') {
+    if (!projectId) return;
+    setExportPending(true); setExportProgress(undefined);
+    try {
+      const result = await api()!.exportArtifact(projectId, kind);
+      if (result) setExportProgress({ jobId: '', phase: 'complete', progress: 1, message: '文件已导出', outputPath: result.outputPath });
+    } catch (error) { setExportProgress({ jobId: '', phase: 'error', progress: 0, message: error instanceof Error ? error.message : String(error) }); }
     finally { setExportPending(false); }
   }
 
@@ -335,19 +362,19 @@ export function App() {
 
         <div className="source-card">
           <div className="source-copy"><span className="source-icon"><Video size={18}/></span><div><b>原始视频</b><small>可选；不添加也能用素材与动效完成视频</small></div></div>
-          {sourceVideoPath ? <div className="source-selected"><span title={sourceVideoPath}>{sourceVideoPath.split(/[\\/]/u).at(-1)}</span><button aria-label="移除原始视频" onClick={() => setSourceVideoPath(undefined)} disabled={working}><X size={15}/></button></div>
+          {sourceVideoPath ? <div className="source-selected"><span title={sourceVideoPath}>{sourceVideoPath.split(/[\\/]/u).at(-1)}</span><button aria-label="移除原始视频" onClick={() => { setSourceVideoPath(undefined); setOriginalEnabled(false); }} disabled={working}><X size={15}/></button></div>
             : <button className="secondary-button" onClick={chooseSource} disabled={working}><Upload size={15}/> 添加视频</button>}
         </div>
         {sourceError && <p className="field-error" role="alert">原始视频入库失败：{sourceError}</p>}
 
         <button className="more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><Settings2 size={15}/> 更多设置{plan && preview ? ' · 音轨' : ''} <ChevronDown size={15}/></button>
         {moreOpen && <div className="settings-grid">
-          <label><span>音色</span><select value={voiceId} onChange={event => setVoiceId(event.target.value)}>
+          <label><span>音色</span><select disabled={working} value={voiceId} onChange={event => setVoiceId(event.target.value)}>
             <optgroup label="内置音色">{voices.map(voice => <option key={voice.id} value={voice.id}>{voice.name} · {voice.note}</option>)}</optgroup>
             {!!clonedVoices.length && <optgroup label="我的克隆音色">{clonedVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</optgroup>}
           </select><button type="button" className="text-action" onClick={() => setCloneOpen(true)}>克隆新音色</button></label>
-          <label><span>画幅</span><select value={aspectRatio} onChange={event => setAspectRatio(event.target.value as typeof aspectRatio)}><option>9:16</option><option>16:9</option><option>1:1</option></select></label>
-          <label><span>字幕风格</span><select value={captionStyle} onChange={event => setCaptionStyle(event.target.value as typeof captionStyle)}><option value="commerce-bold">电商强调</option><option value="opinion-clean">观点口播</option><option value="brand-minimal">品牌极简</option><option value="info-card">信息卡片</option></select></label>
+          <label><span>画幅</span><select disabled={working} value={aspectRatio} onChange={event => setAspectRatio(event.target.value as typeof aspectRatio)}><option>9:16</option><option>16:9</option><option>1:1</option></select></label>
+          <label><span>字幕风格</span><select disabled={working} value={captionStyle} onChange={event => setCaptionStyle(event.target.value as typeof captionStyle)}><option value="commerce-bold">电商强调</option><option value="opinion-clean">观点口播</option><option value="brand-minimal">品牌极简</option><option value="info-card">信息卡片</option></select></label>
           {plan && preview && <div className="bgm-controls">
             <b>音轨</b>
             <label>旁白音量 {Math.round(narrationVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={narrationVolume} disabled={working} onChange={event => setNarrationVolume(Number(event.target.value))}/></label>
@@ -358,19 +385,12 @@ export function App() {
             </>}
             <label>背景音乐<select disabled={working} value={bgmAsset} onChange={event => setBgmAsset(event.target.value)}><option value="">不添加配乐</option>{assets.filter(asset => asset.type === 'audio').map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button onClick={() => setLibraryOpen(true)}>导入 BGM</button></label>
             {bgmAsset && <><label>配乐音量 {Math.round(bgmVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={bgmVolume} disabled={working} onChange={event => setBgmVolume(Number(event.target.value))}/></label><label><input type="checkbox" checked={bgmDucking} disabled={working} onChange={event => setBgmDucking(event.target.checked)}/> 旁白说话时降低配乐音量</label></>}
-            <button disabled={working || !audioDirty} onClick={applyAudio}>{bgmBusy ? '正在混音…' : '应用音轨并试听'}</button>
           </div>}
-        </div>}
-
-        {progress && <div className={`job-status ${progress.phase}`} role="status" aria-live="polite">
-          <div className="status-line"><span className="status-symbol">{working ? <Activity size={18}/> : progress.phase === 'complete' ? <Check size={18}/> : progress.phase === 'error' ? <X size={18}/> : <Sparkles size={18}/>}</span><div><b>{progress.message}</b><small>{Math.round(progress.progress * 100)}% · 工程会随阶段自动保存</small></div></div>
-          <div className="progress-track"><span style={{ width: `${Math.max(2, progress.progress * 100)}%` }}/></div>
-          <ol className="stage-list">{stages.map((stage, index) => <li key={stage.phase} className={index < activeStage || progress.phase === 'complete' ? 'done' : index === activeStage ? 'active' : ''}>{stage.label}</li>)}</ol>
         </div>}
 
         <div className="primary-row">
           {jobId && <button className="cancel-button" onClick={() => api()?.cancelComposition(jobId)}><Square size={14} fill="currentColor"/> 取消生成</button>}
-          <button className="generate-button" disabled={working || !script.trim()} onClick={generate}><WandSparkles size={18}/>{jobId ? '正在自动成片…' : exportJob || exportPending ? '正在导出视频…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
+          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
         </div>
       </section>
 
@@ -382,12 +402,27 @@ export function App() {
         </div>
         {previewError && <div className="preview-error" role="alert"><span>{previewError}</span><button onClick={() => setPreview(value => value ? { ...value, entryUrl: `${value.entryUrl}?retry=${Date.now()}` } : value)}><RefreshCw size={14}/> 重试加载</button></div>}
 
+        {progress && <div className={`job-status ${progress.phase}`} role="status" aria-live="polite">
+          <div className="status-line"><span className="status-symbol">{working ? <Activity size={18}/> : progress.phase === 'complete' ? <Check size={18}/> : progress.phase === 'error' ? <X size={18}/> : <Sparkles size={18}/>}</span><div><b>{progress.message}</b><small>{Math.round(progress.progress * 100)}% · 工程会随阶段自动保存</small></div></div>
+          <div className="progress-track"><span style={{ width: `${Math.max(2, progress.progress * 100)}%` }}/></div>
+          <ol className="stage-list">{stages.map((stage, index) => <li key={stage.phase} className={index < activeStage || progress.phase === 'complete' ? 'done' : index === activeStage ? 'active' : ''}>{stage.label}</li>)}</ol>
+        </div>}
+
+        {plan && preview && <label className="preview-speed">成片倍速
+          <select aria-label="成片倍速" value={playbackRate} disabled={working || !!replacingScene || compositionDirty} onChange={event => void applyAudio(Number(event.target.value))}>
+            {[.25, .5, .75, 1, 1.25, 1.5, 2, 3, 4].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+          </select><small>预览及导出使用相同倍速 · 约 {((preview.durationMs) / 1000).toFixed(1)} 秒</small>
+        </label>}
         {plan && preview && <div className="export-controls">
-          <div className="export-actions"><button className="export-primary" disabled={working || !!replacingScene || audioDirty} onClick={exportVideo}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
+          <div className="export-actions"><button className="export-primary" disabled={working || !!replacingScene || needsGeneration} onClick={exportVideo}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
+            <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('narration-mp3')}>导出旁白 MP3</button>
+            <button disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportArtifact('mixed-mp3')}>导出混音 MP3</button>
+            <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('srt')}>导出 SRT</button>
+            <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('ass')}>导出 ASS</button>
             {exportJob && <button onClick={() => api()?.cancelExport(exportJob)}>取消导出</button>}
             {exportProgress?.outputPath && <button onClick={() => api()?.reveal(exportProgress.outputPath!)}>打开成品所在文件夹</button>}
           </div>
-          {audioDirty && <small>音轨设置已修改，请先应用并试听。</small>}
+          {needsGeneration && <small>设置已修改，点击高亮的“生成视频”更新成片。</small>}
           {exportProgress && <div className="export-progress" role={exportProgress.phase === 'error' ? 'alert' : 'status'}><span>{exportProgress.message}</span>{exportJob && <progress max="1" value={exportProgress.progress}/>}</div>}
         </div>}
       </section>

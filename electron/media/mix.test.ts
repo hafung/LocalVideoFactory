@@ -27,3 +27,15 @@ it('supports voice-only and unducked mixes and validates each level', () => {
   expect(() => mixArguments('v', 'o', 1000, { original: { path: 'source.mp4', volume: -1, ducking: true } })).toThrow();
   expect(() => mixArguments('v', 'o', 1000, { bgm: { path: 'bgm.wav', volume: 2.1, ducking: true } })).toThrow();
 });
+
+
+it('changes the duration of the entire mix without changing pitch, including slow and fast extremes', () => {
+  for (const rate of [.25, .5, 1.5, 2, 4]) {
+    const args = mixArguments('voice.wav', 'mixed.wav', 8000, { playbackRate: rate });
+    expect(Number(args[args.indexOf('-t') + 1])).toBe(8 / rate);
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    expect(graph).toContain('atempo=');
+    expect(graph).not.toContain('asetrate');
+  }
+  expect(() => mixArguments('voice.wav', 'mixed.wav', 8000, { playbackRate: NaN })).toThrow();
+});

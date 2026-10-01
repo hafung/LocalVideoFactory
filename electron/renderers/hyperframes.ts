@@ -14,7 +14,7 @@ export class HyperframesPreviewRenderer implements VideoRenderer {
   private readonly jobs = new Map<string, AbortController>();
   constructor(private readonly resolveAsset?: AssetPathResolver, private readonly tools?: RendererTools) {}
 
-  async prepare(plan: EditPlan, workspace: string): Promise<PreparedComposition> {
+  async prepareAudio(plan: EditPlan, workspace: string): Promise<string> {
     if (this.tools && plan.narration.audioPath && plan.narration.durationMs) {
       await mkdir(workspace, { recursive: true });
       const mixed = path.join(workspace, 'mixed.wav');
@@ -29,11 +29,16 @@ export class HyperframesPreviewRenderer implements VideoRenderer {
         original = { path: plan.input.sourceVideoPath, volume: plan.audio.originalVolume, ducking: plan.audio.originalDucking };
       }
       await mixNarration(this.tools.ffmpegPath, plan.narration.audioPath, mixed, plan.narration.durationMs,
-        { narrationVolume: plan.audio.narrationVolume, original, bgm });
-      return compileFixedTemplate({ ...plan, narration: { ...plan.narration, audioPath: mixed } }, workspace, this.resolveAsset);
+        { narrationVolume: plan.audio.narrationVolume, original, bgm, playbackRate: plan.output.playbackRate });
+      return mixed;
     }
-    if (plan.bgm.enabled && plan.bgm.assetId || plan.audio.originalEnabled || plan.audio.narrationVolume !== 1) throw new Error('音轨混音需要 FFmpeg');
-    return compileFixedTemplate(plan, workspace, this.resolveAsset);
+    if (plan.bgm.enabled && plan.bgm.assetId || plan.audio.originalEnabled || plan.audio.narrationVolume !== 1 || plan.output.playbackRate !== 1) throw new Error('音轨混音需要 FFmpeg');
+    return plan.narration.audioPath!;
+  }
+
+  async prepare(plan: EditPlan, workspace: string): Promise<PreparedComposition> {
+    const audioPath = await this.prepareAudio(plan, workspace);
+    return compileFixedTemplate({ ...plan, narration: { ...plan.narration, audioPath } }, workspace, this.resolveAsset);
   }
 
   async render(request: RenderRequest, onProgress: RenderProgressHandler): Promise<RenderResult> {

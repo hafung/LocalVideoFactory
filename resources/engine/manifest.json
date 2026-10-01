@@ -1,9 +1,9 @@
 {
     "version":  "qwen3-tts-c-v0.2.1",
     "source":  "https://github.com/gabriele-mastrapasqua/qwen3-tts",
-    "sourceCommit":  "1bb0438d63fbf403a4d672df4135ebb6d69a63fe",
-    "sourceDiffSha256":  "18906e1f60954ce73cd5a3411cdd252f5861fb1e668020e0102b9f0c6c78793b",
-    "sourceTreeSha256":  "97bedc2287ec5d377475565303eb64c910f57469b29cb3b3ec04a1e6b983c3de",
+    "sourceCommit":  "c579e170a55473ccca985a865e2a7d785ab89923",
+    "sourceDiffSha256":  "612cf127449035b9d61490d186b218be6a76fda6becbe49055465a8d4b0bcc70",
+    "sourceTreeSha256":  "5ed53a9102540c44990820af46684af39ff8d8c735bafeee013c87afa966d65c",
     "target":  "x86_64-w64-windows-gnu-ucrt",
     "cpuBaseline":  "AVX2+FMA",
     "compiler":  "LLVM-MinGW 20260908 / LLVM 23.1.1",
@@ -35,8 +35,8 @@
     "files":  [
                   {
                       "path":  "build-info.json",
-                      "size":  949,
-                      "sha256":  "c95de0c63ffdd17c1ea2eea79fa8e507bac92efdd7a04b08522e42c5f428334b"
+                      "size":  982,
+                      "sha256":  "9bc19983426662777d5df0bb3cd1635551353e29480bfc3a19adaacd7c50dd6e"
                   },
                   {
                       "path":  "INGOT-LICENSE",
@@ -66,7 +66,7 @@
                   {
                       "path":  "qwen_tts.exe",
                       "size":  1152000,
-                      "sha256":  "f3989c76ba95dfeb948db6cc3b4bb37502ff8a773a8531f15aecfb83ec133a2d"
+                      "sha256":  "7da4d7ecc1981e1a9b4135f97f06682a7836feb92b9e230445ab724252614da8"
                   },
                   {
                       "path":  "QWEN3-TTS-C-LICENSE",

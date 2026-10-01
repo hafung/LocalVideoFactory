@@ -64,6 +64,9 @@ export interface GenerateCompositionRequest extends DraftPlanRequest {
   language?: Language;
   temperature?: number;
   precision?: SynthesisRequest['precision'];
+  bgm?: EditPlan['bgm'];
+  audio?: EditPlan['audio'];
+  playbackRate?: number;
 }
 
 export interface VoxWeaveApi {
@@ -96,8 +99,9 @@ export interface VoxWeaveApi {
   searchPexels(request: { query: string; type: 'video' | 'image'; page: number; orientation?: 'portrait' | 'landscape' | 'square' }): Promise<{ items: OnlineAsset[]; query: string }>;
   downloadPexels(id: string): Promise<MediaAsset>;
   openSource(url: string): Promise<void>;
-  updateAudio(projectId: string, settings: { bgm: EditPlan['bgm']; audio: EditPlan['audio'] }): Promise<{ plan: EditPlan; preview: NonNullable<CompositionProgressEvent['preview']> }>;
+  updateAudio(projectId: string, settings: { bgm: EditPlan['bgm']; audio: EditPlan['audio']; playbackRate?: number }): Promise<{ plan: EditPlan; preview: NonNullable<CompositionProgressEvent['preview']> }>;
   exportVideo(projectId: string): Promise<{ jobId: string } | null>;
+  exportArtifact(projectId: string, kind: 'narration-mp3' | 'mixed-mp3' | 'srt' | 'ass'): Promise<{ outputPath: string } | null>;
   cancelExport(jobId: string): Promise<void>;
   onExportProgress(listener: (event: ExportProgress) => void): () => void;
   synthesize(request: SynthesisRequest): Promise<{ jobId: string }>;
