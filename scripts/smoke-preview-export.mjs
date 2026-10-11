@@ -82,6 +82,7 @@ try {
       getStatus: async () => ({ state: 'idle', backend: 'native', message: 'ready' }), semanticStatus: async () => ({ configured: false, enginePath: '', modelPath: '' }),
       listVoices: async () => [], listAssets: async () => [{ id: 'source-video', filePath: initialState.plan.input.sourceVideoPath, type: 'video', hasAudio: true }],
       resumeLastProject: async () => initialState, onCompositionProgress: callback => { listener = callback; return () => {}; }, onExportProgress: () => () => {},
+      listSceneCandidates: async (id, sceneId, query, throughSceneId) => { window.__calls.push({ candidates: { sceneId, throughSceneId } }); return { query: '', querySource: 'none', candidates: [] }; },
       updateAudio: async (id, settings) => { window.__calls.push({ audio: settings }); return window.__updateAudio(id, settings); },
       generateComposition: async request => { window.__calls.push({ generate: request }); const result = await window.__generate(request);
         setTimeout(() => listener({ jobId: 'generated', phase: 'complete', progress: 1, message: '自动成片预览已就绪', ...result }), 100);
@@ -104,9 +105,22 @@ try {
   await page.waitForFunction(() => !document.querySelector('.generate-button').disabled && document.querySelector('hyperframes-player')?.ready);
   assert.equal(saved.audio.originalEnabled, true);
   assert.equal(await page.$eval('.job-status', el => el.closest('.preview-pane') !== null), true);
+  const canonicalScenes = structuredClone(saved.scenes);
   for (const rate of [2, 4, .5, 1]) {
     await page.select('.preview-speed select', String(rate));
     await page.waitForFunction(rate => !document.querySelector('.generate-button').disabled && document.querySelector('hyperframes-player')?.ready && Number(document.querySelector('.preview-speed select').value) === rate, {}, rate);
+    assert.deepEqual(saved.scenes, canonicalScenes, 'changing speed modified scene structure or source offsets');
+    const labels = await page.$$eval('.scene-card small', elements => elements.map(element => element.textContent));
+    assert.ok(labels[0].includes(`成片 0.0–${(2 / rate).toFixed(1)} 秒`));
+    assert.ok(labels[0].includes('原视频 0.0–2.0 秒'), 'source timestamps must stay in the source clock');
+    assert.ok(labels[2].includes(`成片 ${(4 / rate).toFixed(1)}–${(6 / rate).toFixed(1)} 秒`));
+    await page.click('.scene-card button');
+    await page.waitForSelector('.candidate-scope');
+    assert.ok(await page.$eval('.candidate-scope option', (element, rate) => element.textContent.includes(`成片 ${(2 / rate).toFixed(1)} 秒`), rate));
+    await page.select('.candidate-scope select', saved.scenes[2].id);
+    await page.waitForFunction(id => window.__calls.some(call => call.candidates?.throughSceneId === id), {}, saved.scenes[2].id);
+    await page.waitForFunction(rate => [...document.querySelectorAll('.candidate-message')].some(element => element.textContent.includes(`覆盖成片 ${(6 / rate).toFixed(1)} 秒`)), {}, rate);
+    await page.keyboard.press('Escape');
     await page.evaluate(() => { const player = document.querySelector('hyperframes-player'); player.seek(0); player.play(); });
     await new Promise(resolve => setTimeout(resolve, 250));
     const first = await page.evaluate(() => document.querySelector('hyperframes-player').currentTime);
@@ -114,8 +128,11 @@ try {
     const frame = page.frames().find(frame => frame.url().includes('/preview-'));
     const state = await frame.evaluate(() => ({ videoTime: document.querySelector('video').currentTime,
       videoRate: document.querySelector('video').playbackRate, visible: getComputedStyle(document.querySelector('video')).visibility,
+      audioTime: document.querySelector('audio').currentTime, audioPaused: document.querySelector('audio').paused,
       error: document.querySelector('video').error?.message }));
     assert.equal(state.error, undefined); assert.equal(state.visible, 'visible'); assert.ok(state.videoTime > .04);
+    assert.equal(state.videoRate, rate); assert.equal(state.audioPaused, false);
+    assert.ok(Math.abs(state.videoTime / rate - state.audioTime) < .12, `audio/video clock drift at ${rate}x: ${JSON.stringify(state)}`);
     await page.evaluate(() => { const player = document.querySelector('hyperframes-player'); player.pause(); player.seek(0); player.play(); });
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.ok(await page.evaluate(() => document.querySelector('hyperframes-player').currentTime) > .05, `replay stuck at ${rate}x`);
@@ -181,6 +198,6 @@ try {
     }
   }
   await kineticPage.close();
-  await writeFile(path.join(output, 'result.json'), JSON.stringify({ ok: true, checks, originalAudioPreserved: true, unifiedGenerate: true }, null, 2));
+  await writeFile(path.join(output, 'result.json'), JSON.stringify({ ok: true, checks, originalAudioPreserved: true, unifiedGenerate: true, storyboardTimesScaled: true, sourceOffsetsPreserved: true }, null, 2));
   console.log('Preview/export regression passed', checks);
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

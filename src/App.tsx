@@ -179,6 +179,8 @@ export function App() {
   const candidateEndIndex = candidateThroughSceneId && plan ? plan.scenes.findIndex(scene => scene.id === candidateThroughSceneId) : candidateStartIndex;
   const candidateDurationMs = plan && candidateStartIndex >= 0 && candidateEndIndex >= candidateStartIndex
     ? plan.scenes[candidateEndIndex].endMs - plan.scenes[candidateStartIndex].startMs : 0;
+  const compositionRate = plan?.output.playbackRate ?? 1;
+  const compositionSeconds = (milliseconds: number) => (milliseconds / compositionRate / 1000).toFixed(1);
 
   async function generate() {
     const desktop = api();
@@ -358,7 +360,7 @@ export function App() {
           <small><b>约 {estimatedSeconds || '—'} 秒</b>{script.length.toLocaleString()} / 8,000</small>
         </label>
 
-        <label className="visual-brief-field"><span>画面方向 <small>可选，不会读成旁白</small></span><input value={visualBrief} maxLength={300} onChange={event => setVisualBrief(event.target.value)} placeholder="例如：城市夜景、年轻人、冷色调" disabled={working}/></label>
+        <label className="visual-brief-field"><span>画面方向 <small>可选，用于挑选素材</small></span><input value={visualBrief} maxLength={300} onChange={event => setVisualBrief(event.target.value)} placeholder="例如：城市夜景、年轻人、街头生活" disabled={working}/><small className="visual-brief-help">按主题查找视频和图片，不会读成旁白或自动添加特效。旁白语气由文案语义决定。</small></label>
 
         <div className="source-card">
           <div className="source-copy"><span className="source-icon"><Video size={18}/></span><div><b>原始视频</b><small>可选；不添加也能用素材与动效完成视频</small></div></div>
@@ -431,7 +433,7 @@ export function App() {
         <div className="scene-list">{plan.scenes.map((scene, index) => <article key={scene.id} className="scene-card">
           <span className="scene-number">{String(index + 1).padStart(2, '0')}</span>
           <span className="scene-type">{scene.visual.type === 'kinetic-text' ? <Sparkles size={14}/> : scene.visual.type === 'image' ? <Image size={14}/> : <Video size={14}/>}</span>
-          <div><b>{scene.script}</b><small>{(scene.startMs / 1000).toFixed(1)}–{(scene.endMs / 1000).toFixed(1)}s · {scene.visual.type === 'source' ? `原视频 ${(scene.visual.sourceInMs ?? 0) / 1000}–${(scene.visual.sourceOutMs ?? 0) / 1000}s` : scene.visual.type === 'kinetic-text' && originalVideoDurationMs && scene.startMs >= originalVideoDurationMs ? '原视频结束后的补画面' : scene.visual.type}{index > 0 && scene.visual.assetId && scene.visual.assetId === plan.scenes[index - 1].visual.assetId &&
+          <div><b>{scene.script}</b><small>成片 {compositionSeconds(scene.startMs)}–{compositionSeconds(scene.endMs)} 秒 · {scene.visual.type === 'source' ? `原视频 ${((scene.visual.sourceInMs ?? 0) / 1000).toFixed(1)}–${((scene.visual.sourceOutMs ?? 0) / 1000).toFixed(1)} 秒` : scene.visual.type === 'kinetic-text' && originalVideoDurationMs && scene.startMs >= originalVideoDurationMs ? '原视频结束后的补画面' : scene.visual.type}{index > 0 && scene.visual.assetId && scene.visual.assetId === plan.scenes[index - 1].visual.assetId &&
             (scene.visual.type === 'image' || scene.visual.sourceInMs === plan.scenes[index - 1].visual.sourceOutMs) ? ' · 延续上一画面' : ''}</small></div>
           <button onClick={() => openCandidates(scene.id)} disabled={working || Boolean(replacingScene)}><RefreshCw size={14}/> 换画面</button>
           {sceneNotice?.sceneId === scene.id && <p className="scene-notice" role="status">{sceneNotice.message}</p>}
@@ -449,8 +451,8 @@ export function App() {
           void loadCandidates(candidateSceneId, candidateQuery, through);
         }}>
           {plan.scenes.slice(candidateStartIndex, candidateStartIndex + 10).map((scene, offset) =>
-            <option key={scene.id} value={offset ? scene.id : ''}>{offset ? `到第 ${candidateStartIndex + offset + 1} 句` : '仅这一句'} · {((scene.endMs - plan.scenes[candidateStartIndex].startMs) / 1000).toFixed(1)} 秒</option>)}
-        </select><small>字幕仍逐句显示；所选图片或视频会连续覆盖这段旁白。</small>
+            <option key={scene.id} value={offset ? scene.id : ''}>{offset ? `到第 ${candidateStartIndex + offset + 1} 句` : '仅这一句'} · 成片 {compositionSeconds(scene.endMs - plan.scenes[candidateStartIndex].startMs)} 秒</option>)}
+        </select><small>字幕仍逐句显示；所选画面连续覆盖这段旁白，并使用成片的 {compositionRate}× 倍速。</small>
       </label>}
       {plan?.input.sourceVideoPath && candidateStartIndex >= 0 && <p className="candidate-message">
         {plan.scenes.slice(candidateStartIndex, candidateEndIndex + 1).some(scene => scene.visual.type === 'source')
@@ -465,15 +467,15 @@ export function App() {
       </form>
       {candidateLoading && <p className="candidate-message" role="status">正在查找本地画面…</p>}
       {candidateError && <p className="field-error" role="alert">{candidateError}</p>}
-      {candidateResult && <><p className="candidate-message">{candidateResult.query ? `检索方向：${candidateResult.query}（${candidateResult.querySource === 'manual' ? '手动指定' : candidateResult.querySource === 'story' ? '整篇文案' : '当前分镜'}）` : '当前没有明确画面主题'} · 覆盖 {(candidateDurationMs / 1000).toFixed(1)} 秒{candidateResult.notice ? ` · ${candidateResult.notice}` : ''}</p>
-        <h3 className="candidate-section-title">本地素材 <small>视频长于画面时只取所需片段；短于画面的不列入候选。</small></h3>
+      {candidateResult && <><p className="candidate-message">{candidateResult.query ? `检索方向：${candidateResult.query}（${candidateResult.querySource === 'manual' ? '手动指定' : candidateResult.querySource === 'story' ? '整篇文案' : '当前分镜'}）` : '当前没有明确画面主题'} · 覆盖成片 {compositionSeconds(candidateDurationMs)} 秒{candidateResult.notice ? ` · ${candidateResult.notice}` : ''}</p>
+        <h3 className="candidate-section-title">本地素材 <small>需要原素材 {(candidateDurationMs / 1000).toFixed(1)} 秒；视频只取所需片段，过短的不列入候选。</small></h3>
         <div className="candidate-layout">
           <div className="candidate-grid">{candidateResult.candidates.map((candidate, index) => <button type="button" key={`${candidate.asset.id}-${candidate.choice.type === 'asset' ? candidate.choice.sourceInMs ?? 0 : index}`} className={candidatePreview === candidate ? 'active' : ''} onClick={() => setCandidatePreview(candidate)}>
             {candidate.asset.thumbnailPath ? <img src={`voxweave-library://${candidate.asset.id}/thumbnail`} alt=""/> : <span className="candidate-placeholder">{candidate.asset.type === 'video' ? '视频' : '图片'}</span>}
             <span><b>{candidate.asset.name}</b><small>{candidate.match === 'related' ? '关键词相关' : candidate.match === 'semantic' ? '素材文字语义排序' : candidate.match === 'alternate' ? '同一视频其他片段' : '填充画面'}{candidate.choice.type === 'asset' && candidate.asset.type === 'video' ? ` · ${((candidate.choice.sourceInMs ?? 0) / 1000).toFixed(1)}s 起` : ''}</small></span>
           </button>)}{!candidateResult.candidates.length && <p>素材库中没有满足时长和授权条件的其他画面。</p>}</div>
           <div className="candidate-detail">{candidatePreview ? <>
-            {candidatePreview.asset.type === 'video' ? <video key={`${candidatePreview.asset.id}-${candidatePreview.choice.type === 'asset' ? candidatePreview.choice.sourceInMs : 0}`} src={`voxweave-library://${candidatePreview.asset.id}/media`} controls preload="metadata" onLoadedMetadata={event => { if (candidatePreview.choice.type === 'asset') event.currentTarget.currentTime = (candidatePreview.choice.sourceInMs ?? 0) / 1000; }} onTimeUpdate={event => { if (candidatePreview.sourceOutMs !== undefined && event.currentTarget.currentTime >= candidatePreview.sourceOutMs / 1000) event.currentTarget.pause(); }}/>
+            {candidatePreview.asset.type === 'video' ? <video key={`${candidatePreview.asset.id}-${candidatePreview.choice.type === 'asset' ? candidatePreview.choice.sourceInMs : 0}`} src={`voxweave-library://${candidatePreview.asset.id}/media`} controls preload="metadata" onLoadedMetadata={event => { event.currentTarget.playbackRate = compositionRate; if (candidatePreview.choice.type === 'asset') event.currentTarget.currentTime = (candidatePreview.choice.sourceInMs ?? 0) / 1000; }} onTimeUpdate={event => { if (candidatePreview.sourceOutMs !== undefined && event.currentTarget.currentTime >= candidatePreview.sourceOutMs / 1000) event.currentTarget.pause(); }}/>
               : <img src={`voxweave-library://${candidatePreview.asset.id}/media`} alt={candidatePreview.asset.name}/>}
             <b>{candidatePreview.asset.name}</b><small>{candidatePreview.reasons.join(' · ')}</small>
             <button className="modal-primary" disabled={!!replacingScene} onClick={() => replaceScene(candidateSceneId, candidatePreview.choice)}>{replacingScene ? '正在更新预览…' : '应用这个画面'}</button>
@@ -490,7 +492,7 @@ export function App() {
           return <article key={item.id} className="candidate-online-card">
             <img src={item.thumbnailUrl} alt="" loading="lazy"/>
             <div><b>{item.name}</b><small>{item.type === 'video' ? `视频 · ${((item.durationMs ?? 0) / 1000).toFixed(1)} 秒` : '图片'} · {item.author}</small>
-              <small>{tooShort ? '短于所选画面，不能直接使用' : item.type === 'video' ? `应用时取前 ${(candidateDurationMs / 1000).toFixed(1)} 秒` : `保持 ${(candidateDurationMs / 1000).toFixed(1)} 秒`}</small>
+              <small>{tooShort ? '原素材时长不足，不能直接使用' : item.type === 'video' ? `取原素材前 ${(candidateDurationMs / 1000).toFixed(1)} 秒，成片 ${compositionSeconds(candidateDurationMs)} 秒` : `成片保持 ${compositionSeconds(candidateDurationMs)} 秒`}</small>
               <button disabled={tooShort || !!downloadingOnlineId || !!replacingScene} onClick={() => void downloadAndApply(item)}>{downloadingOnlineId === item.id ? '正在下载并应用…' : '下载并应用'}</button>
               <button className="candidate-source-link" onClick={() => void api()?.openSource(item.sourceUrl)}>查看作者与来源</button>
             </div>

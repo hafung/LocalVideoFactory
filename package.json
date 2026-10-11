@@ -1,6 +1,6 @@
 {
   "name": "voxweave",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "packageManager": "pnpm@10.33.0",
   "private": true,
   "description": "声织 VoxWeave — local-first automatic video creation studio",

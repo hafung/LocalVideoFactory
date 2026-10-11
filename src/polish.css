@@ -96,6 +96,7 @@
 .visual-brief-field { display: block; margin-top: 14px; color: #cacbc9; font-size: 11px; }
 .visual-brief-field > span { display: block; margin-bottom: 7px; font-weight: 650; }
 .visual-brief-field small { color: #777b83; font-weight: 400; }
+.visual-brief-field .visual-brief-help { display: block; margin-top: 7px; line-height: 1.6; }
 .visual-brief-field input,.candidate-search input { width: 100%; height: 39px; border: 1px solid #30323a; border-radius: 9px; background: #17181d; color: #f0f1ec; padding: 0 11px; outline: none; }
 .visual-brief-field input:focus,.candidate-search input:focus { border-color: #9cb464; }
 .candidate-search { display: flex; gap: 9px; align-items: end; margin-bottom: 12px; }
