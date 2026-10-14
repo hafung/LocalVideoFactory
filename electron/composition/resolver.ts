@@ -99,7 +99,7 @@ export function resolveEditPlan(plan: EditPlan, options: ResolvePlanOptions): Ed
       segments: options.narration.segments
     },
     scenes: resolvedScenes(plan, options.narration, options.sourceMetadata),
-    captions: options.narration.captions ?? estimateCaptionCues(options.narration.segments)
+    captions: options.narration.captions ?? estimateCaptionCues(options.narration.segments, plan.template.captionHighlight)
   };
   return EditPlanSchema.parse(resolved);
 }

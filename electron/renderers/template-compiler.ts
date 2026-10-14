@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { EditPlan } from '../../shared/edit-plan.js';
+import { captionStates } from '../../shared/caption-highlights.js';
 import { assertResolvedPlan, type PreparedComposition } from './renderer.js';
 
 const require = createRequire(import.meta.url);
@@ -35,13 +36,24 @@ function patchRuntimeDuration(runtime: string): string {
 function cueMarkup(plan: EditPlan): string {
   const rate = plan.output.playbackRate;
   let captionIndex = 0;
-  return plan.captions.flatMap(cue => cue.tokens.map((active, activeIndex) => {
-    const words = cue.tokens.map((token, index) =>
-      `<span${index === activeIndex ? ' class="active"' : ''}>${escapeHtml(token.text)}</span>`
-    ).join('');
-    const id = `caption-${captionIndex++}`;
-    return `<div id="${id}" class="caption ${escapeHtml(plan.template.captionStyle)}" data-animate-start="${seconds(active.startMs / rate)}" data-animate-duration="${seconds((active.endMs - active.startMs) / rate)}" aria-label="${escapeHtml(cue.text)}">${words}</div>`;
-  })).join('\n');
+  return plan.captions.flatMap(cue => {
+    const chars = Array.from(cue.text);
+    let cursor = 0;
+    const ranges = cue.highlightUnits ?? cue.tokens.map(token => {
+      const startChar = cursor; cursor += Array.from(token.text).length;
+      return { startChar, endChar: cursor };
+    });
+    const boundaries = [...new Set([0, chars.length, ...ranges.flatMap(range => [range.startChar, range.endChar])])].sort((a, b) => a - b);
+    return captionStates(cue, plan.template.captionHighlight).map(active => {
+      const words = boundaries.slice(0, -1).map((start, index) => {
+        const end = boundaries[index + 1];
+        const selected = active.startChar !== undefined && start >= active.startChar && end <= active.endChar!;
+        return `<span${selected ? ' class="active"' : ''}>${escapeHtml(chars.slice(start, end).join(''))}</span>`;
+      }).join('');
+      const id = `caption-${captionIndex++}`;
+      return `<div id="${id}" class="caption ${escapeHtml(plan.template.captionStyle)}" data-animate-start="${seconds(active.startMs / rate)}" data-animate-duration="${seconds((active.endMs - active.startMs) / rate)}" aria-label="${escapeHtml(cue.text)}">${words}</div>`;
+    });
+  }).join('\n');
 }
 
 function kineticMarkup(script: string, startMs: number, durationMs: number, index: number): string {

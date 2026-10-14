@@ -20,6 +20,7 @@ const api: VoxWeaveApi = {
   createDraftPlan: request => ipcRenderer.invoke('composition:create-draft', request),
   generateComposition: request => ipcRenderer.invoke('composition:generate', request),
   cancelComposition: jobId => ipcRenderer.invoke('composition:cancel', jobId),
+  updateCaptions: (projectId, settings) => ipcRenderer.invoke('composition:captions', projectId, settings),
   resumeLastProject: () => ipcRenderer.invoke('composition:resume-last'),
   listSceneCandidates: (projectId, sceneId, query, throughSceneId) => ipcRenderer.invoke('composition:scene-candidates', projectId, sceneId, query, throughSceneId),
   replaceScene: (projectId, sceneId, choice) => ipcRenderer.invoke('composition:replace-scene', projectId, sceneId, choice),

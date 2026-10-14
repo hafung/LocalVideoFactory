@@ -8,13 +8,18 @@ import {
   Play, Plus, RefreshCw, Settings2, Sparkles, Square, Upload, Video, WandSparkles, X
 } from 'lucide-react';
 import { estimateDuration } from '../shared/markup';
-import type { EditPlan } from '../shared/edit-plan';
+import type { EditPlan, CaptionCue } from '../shared/edit-plan';
 import type { MediaAsset, OnlineAsset } from '../shared/library';
 import type { SceneCandidate, SceneCandidateResult, SceneChoice } from '../shared/scene-candidates';
 import type { CompositionProgressEvent, EngineStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
 import type { ModelSetupStatus } from '../shared/model-downloads';
 
 const api = () => window.voxweave;
+function captionAnnotation(cue: CaptionCue): string {
+  if (cue.manualGrouping) return cue.manualGrouping;
+  const boundaries = new Set(cue.highlightUnits?.slice(1).map(unit => unit.startChar));
+  return Array.from(cue.text).map((char, index) => `${boundaries.has(index) ? '|' : ''}${char}`).join('');
+}
 const voices = [
   { id: 'vivian', name: 'Vivian', note: '中文女声 · 清晰自然' },
   { id: 'serena', name: 'Serena', note: '中文女声 · 沉稳温暖' },
@@ -50,6 +55,11 @@ export function App() {
   const [sourceError, setSourceError] = useState('');
   const [aspectRatio, setAspectRatio] = useState<NonNullable<GenerateCompositionRequest['aspectRatio']>>('9:16');
   const [captionStyle, setCaptionStyle] = useState<NonNullable<GenerateCompositionRequest['captionStyle']>>('commerce-bold');
+  const [captionHighlight, setCaptionHighlight] = useState<NonNullable<GenerateCompositionRequest['captionHighlight']>>('word');
+  const [captionBusy, setCaptionBusy] = useState(false);
+  const [captionEditor, setCaptionEditor] = useState(false);
+  const [captionEdits, setCaptionEdits] = useState<Record<string, string>>({});
+  const [captionError, setCaptionError] = useState('');
   const [sourceVideoPath, setSourceVideoPath] = useState<string>();
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -143,6 +153,7 @@ export function App() {
       setVisualBrief(last.plan.input.visualBrief ?? '');
       setAspectRatio(`${last.plan.canvas.width === last.plan.canvas.height ? '1:1' : last.plan.canvas.width > last.plan.canvas.height ? '16:9' : '9:16'}`);
       setCaptionStyle(last.plan.template.captionStyle);
+      setCaptionHighlight(last.plan.template.captionHighlight ?? 'word');
       setSourceVideoPath(last.plan.input.sourceVideoPath); setVoiceId(last.plan.narration.voiceId);
       if (last.preview) setPreview(last.preview);
     }).catch(() => undefined);
@@ -175,14 +186,15 @@ export function App() {
   }, [preview?.entryUrl]);
 
   const estimatedSeconds = useMemo(() => estimateDuration(script), [script]);
-  const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending;
+  const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending || captionBusy;
   const modelsPending = !!modelSetup && !['ready', 'bundled'].includes(modelSetup.state);
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
-  const compositionDirty = !plan || script.trim() !== plan.input.script || visualBrief.trim() !== (plan.input.visualBrief ?? '') ||
+  const contentDirty = !plan || script.trim() !== plan.input.script || visualBrief.trim() !== (plan.input.visualBrief ?? '') ||
     voiceId !== plan.narration.voiceId || sourceVideoPath !== plan.input.sourceVideoPath || captionStyle !== plan.template.captionStyle ||
     aspectRatio !== (plan.canvas.width === plan.canvas.height ? '1:1' : plan.canvas.width > plan.canvas.height ? '16:9' : '9:16');
+  const compositionDirty = contentDirty || captionHighlight !== (plan?.template.captionHighlight ?? 'word');
   const needsGeneration = compositionDirty || audioDirty || !preview;
   const audioSettings = () => ({
     bgm: { enabled: !!bgmAsset, assetId: bgmAsset || undefined, volume: bgmVolume, ducking: bgmDucking },
@@ -215,11 +227,22 @@ export function App() {
     setExportProgress(undefined);
     setProgress({ jobId: 'pending', phase: 'drafting', progress: 0.01, message: '正在创建本地工程…' });
     try {
-      const result = await desktop.generateComposition({ script, visualBrief, voiceId, aspectRatio, captionStyle, sourceVideoPath, language: voiceLanguages[voiceId] ?? 'Chinese', precision: 'int8', ...audioSettings(), playbackRate });
+      const result = await desktop.generateComposition({ script, visualBrief, voiceId, aspectRatio, captionStyle, captionHighlight, sourceVideoPath, language: voiceLanguages[voiceId] ?? 'Chinese', precision: 'int8', ...audioSettings(), playbackRate });
       jobRef.current = result.jobId; setJobId(result.jobId); setProjectId(result.projectId);
     } catch (error) {
       setProgress({ jobId: 'failed', phase: 'error', progress: 0, message: error instanceof Error ? error.message : String(error), recoverable: true });
     } finally { setGeneratePending(false); }
+  }
+
+  async function applyCaptions(edits?: Array<{ cueId: string; text: string }>) {
+    if (!plan || !api()) return;
+    setCaptionBusy(true); setCaptionError('');
+    try {
+      const result = await api()!.updateCaptions(plan.id, { mode: edits ? 'phrase' : captionHighlight, edits });
+      setPlan(result.plan); setPreview(result.preview); setCaptionHighlight(result.plan.template.captionHighlight ?? 'word');
+      setCaptionEditor(false); setCaptionEdits({});
+    } catch (error) { setCaptionError(error instanceof Error ? error.message : String(error)); }
+    finally { setCaptionBusy(false); }
   }
 
   async function chooseSource() {
@@ -408,6 +431,7 @@ export function App() {
           </select><button type="button" className="text-action" disabled={modelsPending} onClick={() => setCloneOpen(true)}>克隆新音色</button></label>
           <label><span>画幅</span><select disabled={working} value={aspectRatio} onChange={event => setAspectRatio(event.target.value as typeof aspectRatio)}><option>9:16</option><option>16:9</option><option>1:1</option></select></label>
           <label><span>字幕风格</span><select disabled={working} value={captionStyle} onChange={event => setCaptionStyle(event.target.value as typeof captionStyle)}><option value="commerce-bold">电商强调</option><option value="opinion-clean">观点口播</option><option value="brand-minimal">品牌极简</option><option value="info-card">信息卡片</option></select></label>
+          <label><span>字幕高亮</span><select aria-label="字幕高亮粒度" disabled={working} value={captionHighlight} onChange={event => setCaptionHighlight(event.target.value as typeof captionHighlight)}><option value="none">无动态高亮</option><option value="word">按词高亮</option><option value="phrase">按短语高亮</option></select></label>
           {plan && preview && <div className="bgm-controls">
             <b>音轨</b>
             <label>旁白音量 {Math.round(narrationVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={narrationVolume} disabled={working} onChange={event => setNarrationVolume(Number(event.target.value))}/></label>
@@ -447,6 +471,12 @@ export function App() {
           </select><small>预览及导出使用相同倍速 · 约 {((preview.durationMs) / 1000).toFixed(1)} 秒</small>
         </label>}
         {plan && preview && <div className="export-controls">
+          <div className="caption-controls"><span>字幕高亮：{captionHighlight === 'phrase' ? '按短语' : captionHighlight === 'word' ? '按词' : '关闭'}</span>
+            <button disabled={working || !!replacingScene || contentDirty} onClick={() => void applyCaptions()}>更新字幕高亮</button>
+            <button disabled={working || !!replacingScene || contentDirty} onClick={() => { setCaptionEditor(true); setCaptionError(''); setCaptionEdits({}); }}>编辑字幕分组</button>
+            <small>更新字幕无需重新生成旁白</small>
+          </div>
+          {captionError && !captionEditor && <p className="field-error" role="alert">{captionError}</p>}
           <div className="export-actions"><button className="export-primary" disabled={working || !!replacingScene || needsGeneration} onClick={exportVideo}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
             <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('narration-mp3')}>导出旁白 MP3</button>
             <button disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportArtifact('mixed-mp3')}>导出混音 MP3</button>
@@ -471,6 +501,17 @@ export function App() {
         </article>)}</div>
       </aside>}
     </main>
+
+    {captionEditor && plan && <Modal title="编辑字幕分组" subtitle="用 | 分隔一起高亮的文字，例如：只要|三个步骤。保存后使用短语高亮。" close={() => { if (!captionBusy) setCaptionEditor(false); }} wide>
+      <div className="caption-editor">{plan.captions.map(cue => <label key={cue.id}>
+        <span>{compositionSeconds(cue.startMs)}–{compositionSeconds(cue.endMs)} 秒</span>
+        <textarea rows={2} disabled={captionBusy || cue.text.includes('|')} value={captionEdits[cue.id] ?? captionAnnotation(cue)}
+          onChange={event => setCaptionEdits(current => ({ ...current, [cue.id]: event.target.value }))}/>
+        {cue.text.includes('|') && <small>这条字幕含 |，使用自动分组。</small>}
+      </label>)}</div>
+      {captionError && <p className="field-error" role="alert">{captionError}</p>}
+      <button className="modal-primary" disabled={captionBusy} onClick={() => void applyCaptions(plan.captions.filter(cue => !cue.text.includes('|')).map(cue => ({ cueId: cue.id, text: captionEdits[cue.id] ?? captionAnnotation(cue) })))}>{captionBusy ? '正在更新字幕…' : '保存分组并更新预览'}</button>
+    </Modal>}
 
     {candidateSceneId && <Modal title="选择分镜画面" subtitle={plan?.scenes.find(scene => scene.id === candidateSceneId)?.script ?? ''} close={() => {
       if (replacingScene || downloadingOnlineId) return;

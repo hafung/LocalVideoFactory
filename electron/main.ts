@@ -29,6 +29,8 @@ import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel
 import { ModelDownloader } from './model-downloads.js';
 import { AUTOMATIC_NARRATION_INSTRUCTION } from '../shared/prosody.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
+import { CaptionHighlightSchema } from '../shared/edit-plan.js';
+import { updateCaptionHighlight } from './composition/caption-editing.js';
 import { ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, type ImportReport } from '../shared/library.js';
 import { searchAssets } from './library/search.js';
 import { automaticTags, cleanAutomaticTags } from './library/tags.js';
@@ -530,7 +532,7 @@ if (cliMode) {
       emit('aligning', 0.63, '正在按最终旁白对齐字幕和分镜…');
       const alignedNarration = await alignNarration(narration, plan.scenes,
         senseVoiceNarrationTranscriber(path.join(modelRoot(), 'models', 'sensevoice-small')), controller.signal,
-        message => emit('aligning', 0.69, `该段字幕使用语音区间估时：${message}`));
+        message => emit('aligning', 0.69, `该段字幕使用语音区间估时：${message}`), plan.template.captionHighlight);
       emit('resolving', 0.74, '正在按真实旁白时长解析分镜…');
       const sourceMetadata = plan.input.sourceVideoPath ? await mediaProbe.probe(plan.input.sourceVideoPath) : undefined;
       let resolved = resolveEditPlan(plan, { narration: alignedNarration, sourceMetadata });
@@ -671,6 +673,22 @@ if (cliMode) {
     } catch (error) { await rm(filePath, { force: true }); throw error; }
   });
   ipcMain.handle('library:open-source', (_event, value: unknown) => shell.openExternal(assertPexelsUrl(z.string().url().parse(value), 'page')));
+  ipcMain.handle('composition:captions', async (_event, idValue: unknown, value: unknown) => {
+    const id = projectIdSchema.parse(idValue);
+    if (projectLocks.has(id)) throw new Error('工程正在处理，请稍后再试');
+    projectLocks.add(id);
+    try {
+      const plan = await editPlans.read(id);
+      if (!['resolved', 'complete'].includes(plan.status)) throw new Error('请先生成预览');
+      const settings = z.object({ mode: CaptionHighlightSchema, edits: z.array(z.object({
+        cueId: z.string().min(1).max(160), text: z.string().min(1).max(10000)
+      }).strict()).max(8000).optional() }).strict().parse(value);
+      const updated = updateCaptionHighlight(plan, settings.mode, settings.edits);
+      const result = await preparePreview(updated);
+      await editPlans.save(updated);
+      return result;
+    } finally { projectLocks.delete(id); }
+  });
   ipcMain.handle('composition:audio', async (_event, idValue: unknown, value: unknown) => {
     const id = projectIdSchema.parse(idValue);
     if (projectLocks.has(id)) throw new Error('工程正在处理，请稍后再试');

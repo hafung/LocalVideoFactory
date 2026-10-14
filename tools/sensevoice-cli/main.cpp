@@ -20,10 +20,11 @@
 #include <vector>
 #include "third_party/c-api.h"
 #include "ass-export.h"
+#include "caption-engine.h"
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
-constexpr const char *kVersion = "0.1.1";
+constexpr const char *kVersion = "0.2.0";
 
 struct Guard {
   std::function<void()> release;
@@ -149,8 +150,9 @@ class Api {
 };
 
 struct Options {
-  fs::path input, modelDirectory, output, srtOutput, assOutput, textOutput;
+  fs::path input, modelDirectory, output, srtOutput, assOutput, textOutput, userDictionary;
   std::string language = "zh", format = "json";
+  std::string highlight = "none";
   int threads = 4;
   bool itn = true, check = false, version = false, help = false;
 };
@@ -170,6 +172,8 @@ Options parse(int argc, wchar_t **argv, const fs::path &directory) {
     else if (flag == L"--srt-output") o.srtOutput = value();
     else if (flag == L"--ass-output") o.assOutput = value();
     else if (flag == L"--text-output") o.textOutput = value();
+    else if (flag == L"--user-dict") o.userDictionary = value();
+    else if (flag == L"--highlight") o.highlight = utf8(value());
     else if (flag == L"--language") o.language = utf8(value());
     else if (flag == L"--format") o.format = utf8(value());
     else if (flag == L"--threads") {
@@ -187,11 +191,12 @@ Options parse(int argc, wchar_t **argv, const fs::path &directory) {
   const std::vector<std::string> languages = {"zh", "en", "ja", "ko", "yue", "auto"};
   if (std::find(languages.begin(), languages.end(), o.language) == languages.end()) throw std::runtime_error("language must be zh, en, ja, ko, yue or auto");
   if (o.format != "json" && o.format != "text" && o.format != "srt" && o.format != "ass") throw std::runtime_error("format must be json, text, srt or ass");
+  if (o.highlight != "none" && o.highlight != "word" && o.highlight != "phrase") throw std::runtime_error("highlight must be none, word or phrase");
   if (!o.help && !o.check && !o.version && o.input.empty()) throw std::runtime_error("--input is required");
   return o;
 }
 
-struct Token { std::string text, endSource; int64_t start, end; bool lexical; };
+using Token = CaptionToken;
 struct Span { int64_t start, end; };
 
 std::vector<float> resample(const float *samples, int count, int rate) {
@@ -245,7 +250,8 @@ void writeOutput(const fs::path &file, const std::string &content, const Options
   if (file.empty()) { std::fwrite(content.data(), 1, content.size(), stdout); return; }
   const std::vector<fs::path> protectedFiles = {o.input, o.modelDirectory / L"model.int8.onnx",
     o.modelDirectory / L"tokens.txt", o.modelDirectory / L"silero_vad.onnx", directory / L"sensevoice-cli.exe",
-    directory / L"sherpa-onnx-c-api.dll", directory / L"onnxruntime.dll", directory / L"onnxruntime_providers_shared.dll"};
+    directory / L"sherpa-onnx-c-api.dll", directory / L"onnxruntime.dll", directory / L"onnxruntime_providers_shared.dll",
+    o.userDictionary, directory / L"dictionary" / L"jieba.dict.utf8", directory / L"dictionary" / L"hmm_model.utf8"};
   for (const auto &protectedFile : protectedFiles) {
     std::error_code error;
     if (!protectedFile.empty() && fs::equivalent(file, protectedFile, error) && !error)
@@ -266,6 +272,13 @@ int run(const Options &o, const fs::path &directory) {
     return 0;
   }
   api.checkOrtApi();
+  const auto dictionary = directory / L"dictionary" / L"jieba.dict.utf8";
+  const auto hmm = directory / L"dictionary" / L"hmm_model.utf8";
+  for (const auto &file : {dictionary, hmm}) if (!fs::is_regular_file(file) || !fs::file_size(file))
+    throw std::runtime_error("Missing segmentation resource: " + utf8(file.wstring()));
+  const auto segmentationStart = Clock::now();
+  CaptionSegmenter segmenter(utf8(dictionary.wstring()), utf8(hmm.wstring()), o.userDictionary);
+  const double segmentationLoadMs = std::chrono::duration<double, std::milli>(Clock::now() - segmentationStart).count();
   const auto model = o.modelDirectory / L"model.int8.onnx", tokensFile = o.modelDirectory / L"tokens.txt",
       vadFile = o.modelDirectory / L"silero_vad.onnx";
   for (const auto &file : {model, tokensFile, vadFile}) if (!fs::is_regular_file(file) || fs::file_size(file) == 0)
@@ -367,11 +380,18 @@ int run(const Options &o, const fs::path &directory) {
     end = std::clamp<int64_t>(end, begin + 1, duration);
     tokenList.push_back({text, source, begin, end, lexical});
   }
-  const auto cues = captions(tokenList);
+  start = Clock::now();
+  std::vector<Cue> cues;
+  for (const auto &cue : captions(tokenList)) {
+    auto enhanced = enhanceCaption(cue, tokenList, segmenter, o.highlight);
+    cues.insert(cues.end(), enhanced.begin(), enhanced.end());
+  }
+  const double segmentationMs = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
   std::ostringstream json, srt;
   json.imbue(std::locale::classic());
   json << "{\"schemaVersion\":1,\"engine\":\"SenseVoiceSmall-INT8\",\"cliVersion\":" << quote(kVersion)
        << ",\"runtimeVersion\":" << quote(api.SherpaOnnxGetVersionStr()) << ",\"provider\":\"cpu\",\"threads\":" << o.threads
+       << ",\"segmenter\":\"cppjieba-5.6.4\",\"captionHighlight\":" << quote(o.highlight)
        << ",\"audio\":{\"sampleRate\":" << wave->sample_rate << ",\"durationMs\":" << duration << "},\"text\":" << quote(result->text ? result->text : "")
        << ",\"language\":" << quote(result->lang ? result->lang : "") << ",\"emotion\":" << quote(result->emotion ? result->emotion : "")
        << ",\"event\":" << quote(result->event ? result->event : "") << ",\"tokens\":[";
@@ -386,12 +406,29 @@ int run(const Options &o, const fs::path &directory) {
   json << "],\"subtitles\":[";
   for (size_t i = 0; i < cues.size(); i++) {
     if (i) json << ',';
-    json << "{\"text\":" << quote(cues[i].text) << ",\"startMs\":" << cues[i].start << ",\"endMs\":" << cues[i].end << '}';
+    const auto &cue = cues[i];
+    json << "{\"text\":" << quote(cue.text) << ",\"startMs\":" << cue.start << ",\"endMs\":" << cue.end << ",\"words\":[";
+    for (size_t j = 0; j < cue.words.size(); ++j) {
+      const auto &word = cue.words[j]; if (j) json << ',';
+      json << "{\"text\":" << quote(word.text) << ",\"tag\":" << quote(word.tag)
+           << ",\"startChar\":" << word.startChar << ",\"endChar\":" << word.endChar
+           << ",\"startMs\":" << word.start << ",\"endMs\":" << word.end
+           << ",\"timingSource\":" << quote(word.estimated ? "estimated" : "acoustic-derived") << '}';
+    }
+    json << "],\"highlightUnits\":[";
+    for (size_t j = 0; j < cue.highlights.size(); ++j) {
+      const auto &unit = cue.highlights[j]; if (j) json << ',';
+      json << "{\"text\":" << quote(unit.text) << ",\"startChar\":" << unit.startChar << ",\"endChar\":" << unit.endChar
+           << ",\"startMs\":" << unit.start << ",\"endMs\":" << unit.end
+           << ",\"timingSource\":" << quote(unit.estimated ? "estimated" : "acoustic-derived") << ",\"groupingSource\":\"rule\"}";
+    }
+    json << "]}";
     srt << i + 1 << '\n' << timestamp(cues[i].start) << " --> " << timestamp(cues[i].end) << '\n' << cues[i].text << "\n\n";
   }
-  json << "],\"timings\":{\"loadMs\":" << loadMs << ",\"recognitionMs\":" << recognitionMs << ",\"vadMs\":" << vadMs << "}}\n";
+  json << "],\"timings\":{\"loadMs\":" << loadMs << ",\"recognitionMs\":" << recognitionMs << ",\"vadMs\":" << vadMs
+       << ",\"segmentationLoadMs\":" << segmentationLoadMs << ",\"segmentationMs\":" << segmentationMs << "}}\n";
   const std::string text = std::string(result->text ? result->text : "") + "\n";
-  const std::string ass = (o.format == "ass" || !o.assOutput.empty()) ? exportAss(cues) : "";
+  const std::string ass = (o.format == "ass" || !o.assOutput.empty()) ? exportAss(cues, o.highlight != "none") : "";
   if (!o.srtOutput.empty()) writeOutput(o.srtOutput, srt.str(), o, directory);
   if (!o.assOutput.empty()) writeOutput(o.assOutput, ass, o, directory);
   if (!o.textOutput.empty()) writeOutput(o.textOutput, text, o, directory);
@@ -407,7 +444,7 @@ int wmain(int argc, wchar_t **argv) {
     const auto directory = executableDirectory();
     const auto options = parse(argc, argv, directory);
     if (options.help) {
-      std::puts("SenseVoice CLI 0.1.1 (Windows x64, native CPU, offline)\n"
+      std::puts("SenseVoice CLI 0.2.0 (Windows x64, native CPU, offline)\n"
         "Usage: sensevoice-cli.exe -i audio.wav [options]\n"
         "  -i, --input PATH       Mono PCM16 WAV (any sample rate)\n"
         "  -o, --output PATH      Write selected format to a UTF-8 file\n"
@@ -415,6 +452,8 @@ int wmain(int argc, wchar_t **argv) {
         "  --srt-output PATH      Additionally write SRT in the same run\n"
         "  --ass-output PATH      Additionally write styled ASS in the same run\n"
         "  --text-output PATH     Additionally write transcript text\n"
+        "  --highlight MODE       none|word|phrase (default: none)\n"
+        "  --user-dict PATH       Optional UTF-8 dictionary: word [frequency tag]\n"
         "  --model-dir PATH       Default: EXE-directory/models/sensevoice-small\n"
         "  --language CODE        zh|en|ja|ko|yue|auto (default: zh)\n"
         "  --threads N            ASR CPU threads, 1..64 (default: 4)\n"

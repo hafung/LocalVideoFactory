@@ -1,4 +1,4 @@
-import type { EditPlan } from '../../shared/edit-plan.js';
+import type { EditPlan, CaptionHighlight } from '../../shared/edit-plan.js';
 import { spokenCharacterCount } from '../../shared/prosody.js';
 import type { NarrationArtifact } from '../composition/narration.js';
 import { estimateCaptionCues } from '../composition/captions.js';
@@ -10,7 +10,7 @@ type Transcribe = (file: string, signal?: AbortSignal) => Promise<SenseVoiceProc
 /** Align only the finished speech clips. Their offsets already include all inserted pauses. */
 export async function alignNarration(
   narration: NarrationArtifact, scenes: EditPlan['scenes'], transcribe: Transcribe,
-  signal?: AbortSignal, onFallback: (message: string) => void = () => undefined
+  signal?: AbortSignal, onFallback: (message: string) => void = () => undefined, highlight?: CaptionHighlight
 ): Promise<NarrationArtifact> {
   const captions: NonNullable<NarrationArtifact['captions']> = [];
   const sceneTimings: NonNullable<NarrationArtifact['sceneTimings']> = [];
@@ -29,7 +29,7 @@ export async function alignNarration(
       if (!aligned.length || aligned.filter(token => token.source === 'aligned').length / aligned.length < 0.55) {
         throw new Error('识别文本与文案匹配不足');
       }
-      captions.push(...alignedCaptionCues(segment.id, segment.text, tokens, startMs, endMs));
+      captions.push(...alignedCaptionCues(segment.id, segment.text, tokens, startMs, endMs, highlight));
       const ids = segment.sceneIds ?? [segment.id];
       let characters = 0;
       for (const [index, id] of ids.entries()) {
@@ -42,7 +42,7 @@ export async function alignNarration(
       }
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
-      captions.push(...estimateCaptionCues([segment]));
+      captions.push(...estimateCaptionCues([segment], highlight));
       onFallback(`${segment.id}：${error instanceof Error ? error.message : String(error)}`);
     }
   }

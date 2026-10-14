@@ -2,8 +2,8 @@
 param([string]$BundleDir, [string]$ReportDir)
 $ErrorActionPreference = 'Stop'
 $project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-if (-not $BundleDir) { $BundleDir = Join-Path $project 'release-dev\SenseVoice-CLI-0.1.1-win-x64' }
-if (-not $ReportDir) { $ReportDir = Join-Path $project '.windows-smoke\sensevoice-standalone' }
+if (-not $BundleDir) { $BundleDir = Join-Path $project 'release-dev\SenseVoice-CLI-0.2.0-win-x64' }
+if (-not $ReportDir) { $ReportDir = Join-Path $project '.windows-smoke\sensevoice-phrases' }
 [IO.Directory]::CreateDirectory($ReportDir) | Out-Null
 $utf8 = New-Object Text.UTF8Encoding($false)
 
@@ -75,6 +75,38 @@ function Check-Ass([string]$Content, $Data) {
     if ($fields[9] -ne $cue.text) { throw 'ASS text differs from JSON.' }
   }
 }
+function Codepoints([string]$Value) {
+  $output = New-Object 'Collections.Generic.List[string]'
+  for ($i = 0; $i -lt $Value.Length; $i++) {
+    if ([char]::IsHighSurrogate($Value[$i]) -and $i + 1 -lt $Value.Length -and [char]::IsLowSurrogate($Value[$i + 1])) {
+      $output.Add($Value.Substring($i, 2)); $i++
+    } else { $output.Add($Value.Substring($i, 1)) }
+  }
+  return ,($output.ToArray())
+}
+function Check-Highlights($Data, [string]$Content) {
+  $count = 0
+  foreach ($cue in $Data.subtitles) {
+    $chars = Codepoints $cue.text
+    if (-not $cue.words.Count -or -not $cue.highlightUnits.Count) { throw 'Missing word/highlight metadata.' }
+    $previousEnd = $cue.startMs; $previousChar = 0
+    foreach ($unit in $cue.highlightUnits) {
+      if ($unit.startMs -lt $previousEnd -or $unit.endMs -le $unit.startMs -or $unit.endMs -gt $cue.endMs -or
+          $unit.startChar -lt $previousChar -or $unit.endChar -le $unit.startChar -or $unit.endChar -gt $chars.Count) { throw 'Invalid highlight range.' }
+      $text = ($chars[$unit.startChar..($unit.endChar - 1)]) -join ''
+      if ($text -ne $unit.text -or $unit.timingSource -notin @('acoustic-derived','estimated') -or $unit.groupingSource -ne 'rule') { throw 'Highlight provenance/text mismatch.' }
+      $previousEnd = $unit.endMs; $previousChar = $unit.endChar; $count++
+    }
+  }
+  if (-not $count -or -not $Content.Contains('{\c&H006DE2FF&}')) { throw 'ASS has no current-group colour.' }
+  $previousEnd = 0
+  foreach ($line in @($Content -split '\r?\n' | Where-Object { $_.StartsWith('Dialogue: ') })) {
+    $fields = $line.Substring(10) -split ',', 10
+    $begin = Ass-Time $fields[1]; $end = Ass-Time $fields[2]
+    if ($begin -lt $previousEnd -or $end -le $begin) { throw 'Overlapping/empty ASS highlight event.' }
+    $previousEnd = $end
+  }
+}
 
 $exe = Join-Path $BundleDir 'sensevoice-cli.exe'
 $checks = @()
@@ -100,6 +132,17 @@ foreach ($report in @('asr-compare\report.json', 'asr-compare-stress\report.json
     Check-Ass ([IO.File]::ReadAllText($sampleAss, $utf8)) $recognized
     $checks += [ordered]@{ name = $sample.id; transcriptMatches = ((Normalize $recognized.text) -eq (Normalize $sample.text)); tokenCount = $recognized.tokens.Count;
       cueCount = $recognized.subtitles.Count; assMatchesJson = $true; wallMs = $result.wallMs }
+    foreach ($mode in @('word','phrase')) {
+      $highlightAss = Join-Path $ReportDir ($sample.id + '-' + $mode + '.ass')
+      $highlighted = Invoke-Native $exe @('-i', (Windows-Path $sample.file), '--highlight', $mode, '--ass-output', $highlightAss) $env:TEMP
+      Assert-Ok $highlighted ($sample.id + '-' + $mode)
+      $highlightData = $highlighted.stdout | ConvertFrom-Json
+      Check-Result $highlightData $sample.text ($report -eq 'asr-compare-stress\report.json')
+      Check-Highlights $highlightData ([IO.File]::ReadAllText($highlightAss, $utf8))
+      if ($highlightData.captionHighlight -ne $mode -or $highlightData.segmenter -ne 'cppjieba-5.6.4') { throw 'Wrong segmentation mode/version.' }
+      [IO.File]::WriteAllText((Join-Path $ReportDir ($sample.id + '-' + $mode + '.json')), $highlighted.stdout, $utf8)
+      $checks += [ordered]@{ name = $sample.id + '-' + $mode; ok = $true; groups = @($highlightData.subtitles | ForEach-Object { $_.highlightUnits }).Count; wallMs = $highlighted.wallMs }
+    }
   }
 }
 
@@ -140,11 +183,27 @@ Assert-Ok $assFile 'ASS selected file'
 if ($assFile.stdout) { throw 'ASS file output leaked to stdout.' }
 Check-Ass ([IO.File]::ReadAllText($selectedAss, $utf8)) $recognized
 $checks += [ordered]@{ name = 'relocated-unicode-four-formats'; ok = $true; externalDirectory = $external }
+$userDictionary = Join-Path $external ($unicode + ' terms.txt')
+[IO.File]::WriteAllText($userDictionary, ($shortReference + ' 100000 n'), $utf8)
+$outsideHighlight = Invoke-Native $outsideExe @('-i', $audioInput, '--highlight', 'phrase', '--user-dict', $userDictionary, '--ass-output', $ass) $env:WINDIR
+Assert-Ok $outsideHighlight 'Relocated phrase/custom dictionary'
+$outsideData = $outsideHighlight.stdout | ConvertFrom-Json
+Check-Highlights $outsideData ([IO.File]::ReadAllText($ass, $utf8))
+if ($outsideData.subtitles[0].words[0].text -ne $shortReference) { throw 'Custom dictionary word missing.' }
+$dictionaryHash = (Get-FileHash -LiteralPath $userDictionary -Algorithm SHA256).Hash
+$dictOverwrite = Invoke-Native $outsideExe @('-i', $audioInput, '--user-dict', $userDictionary, '-o', $userDictionary) $env:TEMP
+if ($dictOverwrite.exitCode -ne 1 -or (Get-FileHash -LiteralPath $userDictionary -Algorithm SHA256).Hash -ne $dictionaryHash) { throw 'Dictionary overwrite protection failed.' }
+[IO.File]::WriteAllText($userDictionary, ($shortReference + ' bad n'), $utf8)
+$badDictionary = Invoke-Native $outsideExe @('-i', $audioInput, '--user-dict', $userDictionary) $env:TEMP
+if ($badDictionary.exitCode -ne 1) { throw 'Invalid dictionary did not fail cleanly.' }
+$badHighlight = Invoke-Native $outsideExe @('-i', $audioInput, '--highlight', 'bad') $env:TEMP
+if ($badHighlight.exitCode -ne 2) { throw 'Invalid highlight mode exit code was not 2.' }
+$checks += [ordered]@{ name = 'relocated-phrase-unicode-dictionary-errors'; ok = $true }
 
 # Validate the exported file with a real libass renderer; FFmpeg is test-only.
 $ffmpeg = Join-Path $project 'resources\ffmpeg\ffmpeg.exe'
 $render = Invoke-Native $ffmpeg @('-hide_banner', '-v', 'info', '-f', 'lavfi', '-i',
-  'color=c=black:s=1920x1080:r=25', '-vf', 'setpts=PTS+1/TB,ass=preset-clean.ass',
+  'color=c=black:s=1920x1080:r=25', '-vf', 'setpts=PTS+1/TB,ass=preset-clean-phrase.ass',
   '-frames:v', '2', '-f', 'null', '-') $ReportDir
 Assert-Ok $render 'ASS libass rendering'
 if ($render.stderr -notmatch 'Added subtitle file:.*events') { throw 'Renderer did not parse ASS events.' }

@@ -1,0 +1,47 @@
+{
+  "cppjieba": {
+    "version": "5.6.4",
+    "source": "https://codeload.github.com/yanyiwu/cppjieba/tar.gz/refs/tags/v5.6.4",
+    "archiveSha256": "011918a6f069b0051830a5e5ca1d1500576cb8a44858d17497d0b820c119ef3f"
+  },
+  "limonp": {
+    "commit": "5c82a3f17e4e0adc6a5decfe245054b0ed533d1a",
+    "source": "https://codeload.github.com/yanyiwu/limonp/tar.gz/5c82a3f17e4e0adc6a5decfe245054b0ed533d1a",
+    "archiveSha256": "6d5450260f6fbe6c22af7be519627b9606d0d73ef67c07f95df7f27aa43b94cd"
+  },
+  "files": {
+    "cppjieba/LICENSE": "ba898a14f729ba5e9965da34e3eecd5edd3795f2cc5d7c923b815ba79bb851b0",
+    "cppjieba/dict/hmm_model.utf8": "f17790586ac86dd048c8adffed052c4bd2b28ed0682972c1275e59040c0589a7",
+    "cppjieba/dict/jieba.dict.utf8": "c9cbbb30e17a0d7feaa1b81debd47262875cd090cffa2604fc2adbe29a96b320",
+    "cppjieba/dict/user.dict.utf8": "495bbf49270408a1234690e1e6a97328f30a482a7a72aa769e8a12e8714b0c62",
+    "cppjieba/include/cppjieba/DictTrie.hpp": "88908f2ccb24738d8eb121733b3422c68579110f79ce1f81112d4c99c2bc67c8",
+    "cppjieba/include/cppjieba/FullSegment.hpp": "0daf88c8c010f8e42c01631bdbcd0599d5b0662c2864d958d38eda31f4b9a4ff",
+    "cppjieba/include/cppjieba/HMMModel.hpp": "bf0f8d5b93d3d4b54b87c5010a0e797fbe3fb1ec43057be3c8e5b6a875a796cc",
+    "cppjieba/include/cppjieba/HMMSegment.hpp": "4727266bbf99b7a485bb2747e610cc6c35674600959dda1626d6438127ba02b2",
+    "cppjieba/include/cppjieba/Jieba.hpp": "83dfdda7cb2ce2c0732a8db9d66f31fdd06fc2fbd551815e8577f8aba54c309f",
+    "cppjieba/include/cppjieba/KeywordExtractor.hpp": "ecf0740a65c8d918bb263359b2782d6663446b4eabba876ad52ccd912f0ac1b6",
+    "cppjieba/include/cppjieba/MPSegment.hpp": "608adde6d93d7abd2a7dfb2ea56756b969ee47a817a91553f371051bb105c640",
+    "cppjieba/include/cppjieba/MixSegment.hpp": "8d9d55b16acb16bf9ae09210f7ba54066b0d2db92d9ae4b3e192ed4ecdadb174",
+    "cppjieba/include/cppjieba/PosTagger.hpp": "68946c8d9277d37ca1d6cfc83e92fe8298c6419a555c8396510b2e061304b7f1",
+    "cppjieba/include/cppjieba/PreFilter.hpp": "23536504cf8d4f9900ee270cbcf122137e62d02523b18fb7f784dd33887cb61c",
+    "cppjieba/include/cppjieba/QuerySegment.hpp": "60812fb607f42ce0afe872fada2b5ae77b5dccbd872caf46ebb8554ef9cfa0c7",
+    "cppjieba/include/cppjieba/SegmentBase.hpp": "13aa43fa18e1f7e8ce1b5789c99450f8e9b8c9c40291b14a6733f5da05504a78",
+    "cppjieba/include/cppjieba/SegmentTagged.hpp": "fd6616377dc5c20b5fa872050e3dc385863824dbc78c7d4d90a9aab820e2c488",
+    "cppjieba/include/cppjieba/TextRankExtractor.hpp": "1c5c16b6e233e11fe0c43279677b05a117d98ffd897e5888bba8241b9689083b",
+    "cppjieba/include/cppjieba/Trie.hpp": "a9f10ee301d29a07ef1d6c33b9146880d86459999360dd2616a3697d5ab6a95c",
+    "cppjieba/include/cppjieba/Unicode.hpp": "2b0af7e9d1a7b6b316ae5a5d94dc30ce4aa6ee6ec30cb5e0205969af2e8dc107",
+    "cppjieba/include/cppjieba/UnicodeFile.hpp": "d33fa7e48e7c4025e15f61ecf6370d2fda1a018b2dbabd3f16f505337b029be9",
+    "limonp/LICENSE": "ba898a14f729ba5e9965da34e3eecd5edd3795f2cc5d7c923b815ba79bb851b0",
+    "limonp/include/limonp/ArgvContext.hpp": "aa2afcd7bc9c92e05ef5ded575d53c103069a365408427418fe7e269c1df2e54",
+    "limonp/include/limonp/Closure.hpp": "c8d7f086ede5664ad28384f6d8c2670c2e34327bb4dc48d063a920305c655d38",
+    "limonp/include/limonp/Colors.hpp": "2cb7587a8bcd80f24ecfeba74de2c203cb3b54cb783a28cdf7f9cc2ad91df011",
+    "limonp/include/limonp/Condition.hpp": "d14ea3e0cfd5e385b04450e8728c588718935ec9b22f88bf885e9feafae4b26d",
+    "limonp/include/limonp/Config.hpp": "3fb09becfda7812c79b4829cacb171362aa2023e8db7fe349bf72ec5e09d0db8",
+    "limonp/include/limonp/ForcePublic.hpp": "bc2637b64af23e1ccd2db2548abad8af4601bf67543e8ac9dd90c2870814ec7a",
+    "limonp/include/limonp/LocalVector.hpp": "1227bdeee48489affeb57ac130ec7f10467d54beac46d3505fead662d1cb51cb",
+    "limonp/include/limonp/Logging.hpp": "83878790b340c2e2906709c4d651c7af791701caddb1049c2b6ed6885e1b804b",
+    "limonp/include/limonp/NonCopyable.hpp": "ee1a84e2efd61776bece9dc92e1068c715abd10572c71bc190a3e2d56117ae6f",
+    "limonp/include/limonp/StdExtension.hpp": "5f5bf96e036f5f678940996976ec40a22030b274fb0d9fd561596eba5ba0e8b2",
+    "limonp/include/limonp/StringUtil.hpp": "222ba1615c856255c25b5e4d5a93f178036680595c2f22dd76a20d75fafa778a"
+  }
+}

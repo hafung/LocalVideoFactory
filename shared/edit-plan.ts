@@ -7,6 +7,22 @@ export const EDIT_PLAN_SCHEMA_VERSION = 1 as const;
 const milliseconds = z.number().int().nonnegative();
 const nonEmptyPath = z.string().trim().min(1);
 
+export const CaptionHighlightSchema = z.enum(['none', 'word', 'phrase']);
+export type CaptionHighlight = z.infer<typeof CaptionHighlightSchema>;
+
+export const HighlightUnitSchema = z.object({
+  text: z.string().min(1),
+  startChar: z.number().int().nonnegative(),
+  endChar: z.number().int().positive(),
+  startMs: milliseconds,
+  endMs: milliseconds,
+  timingSource: z.enum(['acoustic-derived', 'estimated']),
+  groupingSource: z.enum(['rule', 'manual'])
+}).strict().refine(unit => unit.endMs > unit.startMs && unit.endChar > unit.startChar, {
+  message: '高亮范围和时间必须有效'
+});
+export type HighlightUnit = z.infer<typeof HighlightUnitSchema>;
+
 export const CanvasSchema = z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
@@ -19,7 +35,11 @@ export const AcousticTokenSchema = z.object({
   startMs: milliseconds,
   endMs: milliseconds,
   confidence: z.number().min(0).max(1).optional(),
-  source: z.enum(['aligned', 'estimated'])
+  source: z.enum(['aligned', 'estimated']),
+  startChar: z.number().int().nonnegative().optional(),
+  endChar: z.number().int().positive().optional(),
+  tag: z.string().optional(),
+  timingSource: z.enum(['acoustic-derived', 'estimated']).optional()
 }).strict().refine(token => token.endMs > token.startMs, {
   message: '字幕 token 的结束时间必须晚于开始时间', path: ['endMs']
 });
@@ -30,6 +50,8 @@ export const CaptionCueSchema = z.object({
   startMs: milliseconds,
   endMs: milliseconds,
   tokens: z.array(AcousticTokenSchema),
+  highlightUnits: z.array(HighlightUnitSchema).optional(),
+  manualGrouping: z.string().max(10000).optional(),
   emphasis: z.array(z.string()).default([])
 }).strict().superRefine((cue, context) => {
   if (cue.endMs <= cue.startMs) {
@@ -39,6 +61,21 @@ export const CaptionCueSchema = z.object({
     if (token.startMs < cue.startMs || token.endMs > cue.endMs) {
       context.addIssue({ code: 'custom', message: '字幕 token 必须位于所属字幕区间内', path: ['tokens', index] });
     }
+    if ((token.startChar === undefined) !== (token.endChar === undefined) ||
+        (token.startChar !== undefined && token.endChar !== undefined &&
+          (token.endChar <= token.startChar || token.endChar > Array.from(cue.text).length ||
+            Array.from(cue.text).slice(token.startChar, token.endChar).join('') !== token.text))) {
+      context.addIssue({ code: 'custom', message: '字幕词范围必须对应原文', path: ['tokens', index] });
+    }
+  }
+  let previousChar = 0;
+  let previousEnd = cue.startMs;
+  for (const [index, unit] of (cue.highlightUnits ?? []).entries()) {
+    if (unit.startChar < previousChar || unit.endChar > Array.from(cue.text).length || unit.startMs < previousEnd || unit.endMs > cue.endMs ||
+        Array.from(cue.text).slice(unit.startChar, unit.endChar).join('') !== unit.text) {
+      context.addIssue({ code: 'custom', message: '高亮组必须有序且对应字幕原文和时间', path: ['highlightUnits', index] });
+    }
+    previousChar = unit.endChar; previousEnd = unit.endMs;
   }
 });
 
@@ -118,7 +155,8 @@ export const EditPlanSchema = z.object({
   template: z.object({
     id: z.string().min(1),
     version: z.number().int().positive(),
-    captionStyle: z.enum(['commerce-bold', 'opinion-clean', 'brand-minimal', 'info-card'])
+    captionStyle: z.enum(['commerce-bold', 'opinion-clean', 'brand-minimal', 'info-card']),
+    captionHighlight: CaptionHighlightSchema.optional()
   }).strict(),
   narration: z.object({
     state: z.enum(['pending', 'ready']),
@@ -201,7 +239,8 @@ export const DraftPlanRequestSchema = z.object({
   visualBrief: z.string().trim().max(300).optional(),
   aspectRatio: z.enum(['9:16', '16:9', '1:1']).optional(),
   templateId: z.string().min(1).optional(),
-  captionStyle: z.enum(['commerce-bold', 'opinion-clean', 'brand-minimal', 'info-card']).optional()
+  captionStyle: z.enum(['commerce-bold', 'opinion-clean', 'brand-minimal', 'info-card']).optional(),
+  captionHighlight: CaptionHighlightSchema.optional()
 }).strict();
 
 export type DraftPlanRequest = z.infer<typeof DraftPlanRequestSchema>;
@@ -289,7 +328,8 @@ export function createDraftEditPlan(input: CreateDraftEditPlanInput): EditPlan {
     template: {
       id: input.templateId ?? 'voxweave-auto-v1',
       version: 1,
-      captionStyle: input.captionStyle ?? 'commerce-bold'
+      captionStyle: input.captionStyle ?? 'commerce-bold',
+      captionHighlight: input.captionHighlight
     },
     narration: {
       state: 'pending',

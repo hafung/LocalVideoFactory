@@ -16,6 +16,8 @@ The bundled FFmpeg 8.1 executable is the Windows x64 **GPL v3 or later** build p
 
 [`@node-rs/jieba`](https://github.com/napi-rs/node-rs) is distributed under the MIT License and provides local Chinese word segmentation.
 
+The independent SenseVoice CLI additionally embeds [cppjieba 5.6.4](https://github.com/yanyiwu/cppjieba/tree/v5.6.4) and its dictionaries, and [limonp](https://github.com/yanyiwu/limonp/tree/5c82a3f17e4e0adc6a5decfe245054b0ed533d1a), under their MIT licenses. Source/resource hashes and archive provenance are recorded under `tools/sensevoice-cli/third_party/segmentation-manifest.json`; the standalone bundle retains both licenses. The Electron app continues to use its existing jieba binding.
+
 The optional Qwen3 Embedding 0.6B GGUF Q8_0 model is published by Qwen under Apache License 2.0. Its pinned model hash, source, and notice are under `resources/semantic/`. The separate llama.cpp b11039 Windows CPU runtime is MIT-licensed; its LLVM OpenMP dependency includes its own notice. `scripts/setup-semantic.ps1` verifies the original downloads before installation, and the resulting resource files are hash-verified during offline packaging.
 
 [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx) is distributed under the Apache License 2.0 and provides the native ONNX Runtime integration for local alignment. The pinned SenseVoiceSmall weights are redistributed under the bundled FunASR Model Open Source License Agreement v1.1, which requires source/author attribution and retention of the model name. Silero VAD is MIT-licensed. Model files and all three notices are hash-verified under `resources/models/sensevoice-small/`; commercial distribution should still receive a license review because the FunASR model agreement is a custom license.

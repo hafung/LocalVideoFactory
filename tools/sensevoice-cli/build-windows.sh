@@ -4,7 +4,7 @@ set -euo pipefail
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$(cd "$SOURCE/../.." && pwd)"
 STAGE="$PROJECT/.windows-smoke/sensevoice-native-build"
-BUNDLE="${SENSEVOICE_CLI_OUTPUT:-$PROJECT/release-dev/SenseVoice-CLI-0.1.1-win-x64}"
+BUNDLE="${SENSEVOICE_CLI_OUTPUT:-$PROJECT/release-dev/SenseVoice-CLI-0.2.0-win-x64}"
 LLVM="${SENSEVOICE_CLI_LLVM:-/tmp/voxweave-qwen-windows-cache/llvm-mingw-20260908-ucrt-ubuntu-22.04-x86_64}"
 RUNTIME="${SENSEVOICE_CLI_RUNTIME_DIR:-}"
 MODEL_SOURCE="$PROJECT/resources/models/sensevoice-small"
@@ -40,6 +40,12 @@ for entry in list(manifest['files'].values())+list(manifest.get('notices',{}).va
     p=(root/entry['path']).resolve()
     assert p.is_relative_to(root.resolve()), p
     assert sha(p)==entry['sha256'], p
+segmentation=project/'tools/sensevoice-cli/third_party'
+segment_manifest=json.loads((segmentation/'segmentation-manifest.json').read_text())
+for name,expected in segment_manifest['files'].items():
+    p=(segmentation/name).resolve()
+    assert p.is_relative_to(segmentation.resolve()), p
+    assert sha(p)==expected, f'Segmentation dependency changed: {name}'
 snapshot={str(p.relative_to(project)):sha(p) for p in [project/'electron/main.ts',
     project/'electron/alignment/sensevoice.ts',project/'package.json',root/'manifest.json']}
 (stage/'original-project-hashes.json').write_text(json.dumps(snapshot,indent=2)+'\n')
@@ -47,6 +53,7 @@ PY
 
 (cd "$SOURCE/windows" && "$LLVM/bin/x86_64-w64-mingw32-windres" -O coff sensevoice-cli.rc -o "$STAGE/manifest.o")
 "$LLVM/bin/x86_64-w64-mingw32-clang++" -std=c++17 -O2 -Wall -Wextra \
+  -I "$SOURCE/third_party/cppjieba/include" -I "$SOURCE/third_party/limonp/include" \
   -D_WIN32_WINNT=0x0A00 -static -municode "$SOURCE/main.cpp" "$STAGE/manifest.o" -o "$STAGE/sensevoice-cli.exe"
 
 python3 - "$PROJECT" "$SOURCE" "$STAGE" "$BUNDLE" "$RUNTIME" "$MODEL_SOURCE" "$LLVM" "$ORT" <<'PY'
@@ -82,6 +89,11 @@ for entry in list(model_manifest['files'].values())+list(model_manifest.get('not
 copy(models/'manifest.json','models/sensevoice-small/manifest.json')
 copy(project/'LICENSE','LICENSE.txt')
 copy(source/'README.md','README.md')
+for name in ['jieba.dict.utf8','hmm_model.utf8']:
+    copy(source/'third_party/cppjieba/dict'/name,Path('dictionary')/name)
+copy(source/'third_party/cppjieba/LICENSE','licenses/CPPJIEBA-LICENSE.txt')
+copy(source/'third_party/limonp/LICENSE','licenses/LIMONP-LICENSE.txt')
+copy(source/'third_party/segmentation-manifest.json','dictionary/manifest.json')
 for p in (source/'licenses').glob('*'): copy(p,Path('licenses')/p.name)
 copy(llvm/'LICENSE.TXT','licenses/LLVM-MINGW-LICENSE.txt')
 for name in ['COPYING.MinGW-w64.txt','COPYING.MinGW-w64-runtime.txt','COPYING.winpthreads.txt']:
@@ -94,6 +106,8 @@ SenseVoiceSmall INT8: FunASR Model Open Source License Agreement v1.1; retain Se
 https://github.com/FunAudioLLM/SenseVoice ; https://github.com/modelscope/FunASR
 Silero VAD: MIT; https://github.com/snakers4/silero-vad
 LLVM-MinGW/libc++/MinGW-w64/winpthreads static runtime notices: see licenses/.
+cppjieba 5.6.4 and dictionaries: MIT; https://github.com/yanyiwu/cppjieba/tree/v5.6.4
+limonp 5c82a3f17e4e0adc6a5decfe245054b0ed533d1a: MIT; https://github.com/yanyiwu/limonp
 No Electron, Node.js, Python, FFmpeg or Qwen model is included or required.
 '''
 (bundle/'THIRD-PARTY-NOTICES.txt').write_text(notices)
@@ -115,13 +129,14 @@ for name in ['sensevoice-cli.exe','sherpa-onnx-c-api.dll','onnxruntime.dll','onn
         assert system or (bundle/dep).exists(), f'Unbundled dependency: {name} -> {dep}'
 snapshot=json.loads((stage/'original-project-hashes.json').read_text())
 assert all(sha(project/name)==expected for name,expected in snapshot.items()), 'Existing project files changed'
-info={'cliVersion':'0.1.1','target':'Windows x64 UCRT, CPU','compiler':'LLVM-MinGW 20260908 / LLVM 23.1.1',
- 'sherpaVersion':'1.13.8','onnxruntimeVersion':'1.28.2','runtimeSource':str(runtime),'ortSource':str(ort),'msvcRedistSource':str(crt),'sourceFiles':{str(p.relative_to(source)):sha(p) for p in [source/'main.cpp',source/'ass-export.h',source/'third_party/c-api.h',source/'windows/sensevoice-cli.exe.manifest',source/'windows/sensevoice-cli.rc',source/'build-windows.sh',source/'setup-sdk.sh']},
+info={'cliVersion':'0.2.0','target':'Windows x64 UCRT, CPU','compiler':'LLVM-MinGW 20260908 / LLVM 23.1.1',
+ 'sherpaVersion':'1.13.8','onnxruntimeVersion':'1.28.2','runtimeSource':str(runtime),'ortSource':str(ort),'msvcRedistSource':str(crt),'sourceFiles':{str(p.relative_to(source)):sha(p) for p in [source/'main.cpp',source/'ass-export.h',source/'caption-types.h',source/'caption-engine.h',source/'third_party/c-api.h',source/'third_party/segmentation-manifest.json',source/'windows/sensevoice-cli.exe.manifest',source/'windows/sensevoice-cli.rc',source/'build-windows.sh',source/'setup-sdk.sh']},
  'headerSource':'https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/sherpa-onnx/c-api/c-api.h',
  'sdkArchiveSource':'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-no-tts.tar.bz2',
  'sdkArchiveSha256':'4b0a94f7b5c606b1b64a19a831c2127559e4b3d34e195465ebc7be73d9ed4783',
  'ortArchiveSource':'https://github.com/microsoft/onnxruntime/releases/download/v1.28.2/onnxruntime-win-x64-1.28.2.zip',
  'ortArchiveSha256':'c4eedd29489d5feca21866d054638416f3655bf6b18851b3b6b85c8313e95c35',
+ 'segmentation':json.loads((source/'third_party/segmentation-manifest.json').read_text()),
  'imports':imports,'originalProjectHashes':snapshot,'modelManifest':model_manifest,
  'files':{str(p.relative_to(bundle)):{'bytes':p.stat().st_size,'sha256':sha(p)} for p in sorted(bundle.rglob('*')) if p.is_file() and p.name!='build-info.json'}}
 (bundle/'build-info.json').write_text(json.dumps(info,indent=2)+'\n')

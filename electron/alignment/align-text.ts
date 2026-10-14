@@ -1,5 +1,6 @@
-import type { AcousticToken, CaptionCue } from '../../shared/edit-plan.js';
+import type { AcousticToken, CaptionCue, CaptionHighlight } from '../../shared/edit-plan.js';
 import { segmentChinese } from '../composition/segmenter.js';
+import { buildPhraseCaptionCues, timedCaptionWords } from '../composition/phrase-captions.js';
 
 export interface RecognizedToken {
   text: string;
@@ -8,7 +9,7 @@ export interface RecognizedToken {
   confidence?: number;
 }
 
-type CharacterToken = Omit<RecognizedToken, 'endMs'> & { character: string; endMs: number };
+type CharacterToken = Omit<RecognizedToken, 'endMs'> & { character: string; endMs: number; estimated: boolean };
 
 const ignored = /^[\p{P}\p{S}\s]+$/u;
 
@@ -26,6 +27,7 @@ function expandRecognized(tokens: RecognizedToken[], fallbackEndMs: number): Cha
     return chars.map((character, index) => ({
       ...token,
       character,
+      estimated: chars.length > 1,
       startMs: token.startMs + Math.round(duration * index / chars.length),
       endMs: token.startMs + Math.round(duration * (index + 1) / chars.length)
     }));
@@ -74,7 +76,7 @@ export function alignTextTokens(
   const matches = alignment(reference, recognized);
   const anchors = matches.map((matched, index) => matched === undefined ? undefined : ({
     index, startMs: recognized[matched].startMs, endMs: recognized[matched].endMs,
-    confidence: recognized[matched].confidence
+    confidence: recognized[matched].confidence, estimated: recognized[matched].estimated
   }));
   const intervals = anchors.map(anchor => anchor && ({ startMs: anchor.startMs, endMs: anchor.endMs }));
   for (let index = 0; index < intervals.length;) {
@@ -97,7 +99,8 @@ export function alignTextTokens(
     const end = Math.max(start + 1, Math.min(latestEnd, interval.endMs));
     previousEnd = end;
     return { text, startMs: start, endMs: end,
-      confidence: anchors[index]?.confidence, source: anchors[index] ? 'aligned' as const : 'estimated' as const };
+      confidence: anchors[index]?.confidence, source: anchors[index] ? 'aligned' as const : 'estimated' as const,
+      timingSource: anchors[index] && !anchors[index]!.estimated ? 'acoustic-derived' as const : 'estimated' as const };
   });
 }
 
@@ -106,10 +109,12 @@ export function alignedCaptionCues(
   originalText: string,
   recognizedTokens: RecognizedToken[],
   startMs: number,
-  endMs: number
+  endMs: number,
+  highlight?: CaptionHighlight
 ): CaptionCue[] {
   const aligned = alignTextTokens(originalText, recognizedTokens, startMs, endMs);
   if (!aligned.length) return [];
+  if (highlight) return buildPhraseCaptionCues(id, originalText, timedCaptionWords(originalText, aligned), highlight);
   const words = segmentChinese(originalText).filter(word => !ignored.test(word));
   const cues: CaptionCue[] = [];
   let characterCursor = 0;

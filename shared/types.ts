@@ -84,6 +84,7 @@ export interface VoxWeaveApi {
   createDraftPlan(request: DraftPlanRequest): Promise<EditPlan>;
   generateComposition(request: GenerateCompositionRequest): Promise<{ jobId: string; projectId: string }>;
   cancelComposition(jobId: string): Promise<void>;
+  updateCaptions(projectId: string, settings: { mode: import('./edit-plan.js').CaptionHighlight; edits?: Array<{ cueId: string; text: string }> }): Promise<{ plan: EditPlan; preview: NonNullable<CompositionProgressEvent['preview']> }>;
   resumeLastProject(): Promise<{ plan: EditPlan; preview?: CompositionProgressEvent['preview'] } | null>;
   listSceneCandidates(projectId: string, sceneId: string, query?: string, throughSceneId?: string): Promise<SceneCandidateResult>;
   replaceScene(projectId: string, sceneId: string, choice: SceneChoice): Promise<

@@ -1,5 +1,6 @@
-import type { CaptionCue } from '../../shared/edit-plan.js';
-import { segmentChinese } from './segmenter.js';
+import type { CaptionCue, CaptionHighlight } from '../../shared/edit-plan.js';
+import { segmentChinese, segmentCaptionText } from './segmenter.js';
+import { buildPhraseCaptionCues } from './phrase-captions.js';
 
 const punctuation = /^[\p{P}\p{S}\s]+$/u;
 
@@ -49,10 +50,21 @@ function weightedBoundaries(weights: number[], startMs: number, endMs: number): 
 }
 
 export function estimateCaptionCues(
-  segments: Array<{ id: string; text: string; startMs: number; endMs: number; speechStartMs?: number; speechEndMs?: number }>
+  segments: Array<{ id: string; text: string; startMs: number; endMs: number; speechStartMs?: number; speechEndMs?: number }>,
+  highlight?: CaptionHighlight
 ): CaptionCue[] {
   const cues: CaptionCue[] = [];
   for (const segment of segments) {
+    if (highlight) {
+      const parts = segmentCaptionText(segment.text).filter(part => part.lexical);
+      if (!parts.length) continue;
+      const start = segment.speechStartMs ?? segment.startMs, end = segment.speechEndMs ?? segment.endMs;
+      if (end - start < parts.length) throw new Error(`旁白分段 ${segment.id} 过短，无法分配字幕时间`);
+      const boundaries = weightedBoundaries(parts.map(part => tokenWeight(part.text)), start, end);
+      cues.push(...buildPhraseCaptionCues(segment.id, segment.text, parts.map((part, index) => ({ ...part,
+        startMs: boundaries[index], endMs: boundaries[index + 1], source: 'estimated' as const })), highlight));
+      continue;
+    }
     const words = segmentChinese(segment.text).filter(token => !punctuation.test(token));
     if (!words.length) continue;
     const startMs = segment.speechStartMs ?? segment.startMs;
