@@ -13,7 +13,7 @@
 
 VoxWeave (声织) is a local-first voice studio for video makers, podcasters, educators, and developers. It combines a focused desktop editor with a scriptable CLI and a native C inference engine powered by Qwen3-TTS 1.7B CustomVoice on CPU.
 
-Your drafts, reference voices, and generated audio stay on your machine. The Windows offline package is being closed as an extracted directory: the app executable and external engine, model, and FFmpeg resources live side by side, with no customer-side model download.
+Your drafts, reference voices, and generated audio stay on your machine. The Windows installer bundles native runtimes and automatically downloads models on first launch. Once the models are ready, creation works offline.
 
 > **Current release:** v0.2.1 for Windows x64. macOS and Linux packages are on the roadmap; the application layer is already built on cross-platform Electron, React, TypeScript, and C.
 
@@ -21,7 +21,7 @@ Your drafts, reference voices, and generated audio stay on your machine. The Win
 
 - **Keep unreleased content private.** Scripts and voice samples are processed locally instead of being sent to a third-party API.
 - **Create on ordinary hardware.** CPU inference and INT8/INT4 modes make local voice production possible without a discrete GPU.
-- **Spend time editing, not configuring.** The Windows release layout bundles pre-downloaded models, the native engine runtime, and FFmpeg as inspectable external resources.
+- **Spend time editing, not configuring.** The Windows installer includes the native engine, FFmpeg, and rendering runtime; model downloads happen automatically with progress, resume, and hash verification.
 - **Narrate plain text.** The app groups nearby sentences, lets TTS adapt expression and pace to their meaning, and fills paragraph pauses without requiring markup.
 - **Fit it into a real workflow.** Export WAV, FLAC, MP3, Ogg/Opus, or M4A/AAC from the GUI or automate batches with the CLI.
 - **Stay responsive on long jobs.** Inference runs in an isolated native process, so loading a model or cancelling a task does not freeze the editor.
@@ -37,16 +37,16 @@ Your drafts, reference voices, and generated audio stay on your machine. The Win
 - Automatic normalization of common reference-audio formats to 24 kHz mono PCM
 - Shared parsing, inference settings, audio assembly, and transcoding behavior across GUI and CLI
 
-## Download and run offline
+## Download, install, and prepare models
 
 Download the latest Windows build from [GitHub Releases](https://github.com/hafung/VoxWeave/releases/latest).
 
-- **Setup EXE (recommended):** installs once and starts quickly in everyday use.
-- **Portable directory ZIP:** extract once; models, engine, and FFmpeg remain separate files under `resources`, and the app starts directly from the extracted directory.
+- **GitHub Setup EXE:** install and launch. The first launch downloads approximately 9 GB of Qwen3-TTS CustomVoice/Base, their shared speech tokenizer, SenseVoice/Silero VAD, and the semantic retrieval model from official sources. Keep internet access and sufficient free disk space during setup. The app displays progress and a retry button if downloads fail; restarting resumes partial downloads. Models stay under `%APPDATA%\voxweave\model-resources` and are reused across app upgrades.
+- **Local offline portable ZIP:** developers can still build the complete offline directory package with `pnpm package:win`. GitHub CI publishes the installer; multi-gigabyte model weights are excluded from its artifacts.
 
 For a local build, extract the ZIP and launch `VoxWeave.exe`; do not run it from inside the archive.
 
-The current directory build has passed a packaged-EXE sample on the build host; customer clean-machine acceptance remains a release gate. Customers will not need Node.js, an account, API key, Python, WSL, or a model download. An engine/model override remains available in Settings for developers testing custom builds.
+Customers do not need Node.js, an account, API key, Python, or WSL. After automatic model preparation, creation works offline. An engine/model override remains available in Settings for developers testing custom builds. Clean-machine installer and full-download acceptance still require a Windows release test.
 
 ## Command line
 
@@ -89,7 +89,9 @@ pnpm verify:resources
 pnpm package:win
 ```
 
-`package:win` creates `release\VoxWeave-Portable-<version>-<arch>.zip`; `package:win:installer` additionally requests an NSIS Setup build. Both strictly verify the model, native Qwen engine, runtime DLL, FFmpeg, and license closure first.
+`package:win` creates the complete offline `release\VoxWeave-Portable-<version>-<arch>.zip`. `package:win:installer` creates `release\VoxWeave-Setup-<version>-x64.exe` and its SHA-256 file, includes only native runtimes and a validated model download catalog, and does not require model weights on the build machine. Prepare the native engine, FFmpeg, browser, and semantic runtime first (`scripts/setup-semantic.ps1 -RuntimeOnly` skips the embedding weight). `package:win:offline-installer` retains the previous full offline NSIS option, subject to installer size limits.
+
+GitHub Actions checks the app on Linux and Windows, cross-compiles the Windows Qwen engine on Linux, and builds the model-free NSIS installer on Windows for `main`, version tags, and manual runs. The installer is available as the `VoxWeave-Windows-Setup` Actions artifact. Pushing a `v<package.json version>` tag also publishes the installer and checksum to GitHub Releases.
 
 For CLI development, point VoxWeave to a compatible engine, model, and FFmpeg binary:
 

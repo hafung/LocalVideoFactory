@@ -12,6 +12,7 @@ import type { EditPlan } from '../shared/edit-plan';
 import type { MediaAsset, OnlineAsset } from '../shared/library';
 import type { SceneCandidate, SceneCandidateResult, SceneChoice } from '../shared/scene-candidates';
 import type { CompositionProgressEvent, EngineStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
+import type { ModelSetupStatus } from '../shared/model-downloads';
 
 const api = () => window.voxweave;
 const voices = [
@@ -67,6 +68,7 @@ export function App() {
   const [originalVolume, setOriginalVolume] = useState(.35);
   const [originalDucking, setOriginalDucking] = useState(true);
   const [status, setStatus] = useState<EngineStatus>({ state: 'missing', backend: 'none', message: '正在检测本地引擎…' });
+  const [modelSetup, setModelSetup] = useState<ModelSetupStatus>();
   const [enginePath, setEnginePath] = useState('');
   const [modelDir, setModelDir] = useState('');
   const [semanticEnginePath, setSemanticEnginePath] = useState('');
@@ -96,6 +98,22 @@ export function App() {
   const [downloadingOnlineId, setDownloadingOnlineId] = useState<string>();
   const candidateSearchToken = useRef(0);
   const playerRef = useRef<HyperframesPlayer>(null);
+  useEffect(() => {
+    const desktop = api();
+    if (!desktop?.modelSetupStatus) return;
+    let active = true;
+    const update = (value: ModelSetupStatus) => {
+      if (!active) return;
+      setModelSetup(value);
+      if (value.state === 'ready') {
+        void desktop.getStatus().then(result => { if (active) { setStatus(result); setEnginePath(result.enginePath ?? ''); setModelDir(result.modelDir ?? ''); } });
+        void desktop.semanticStatus().then(result => { if (active) { setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath); } });
+      }
+    };
+    const unsubscribe = desktop.onModelSetupProgress(update);
+    void desktop.modelSetupStatus().then(update);
+    return () => { active = false; unsubscribe(); };
+  }, []);
   useEffect(() => api()?.onExportProgress(event => {
     setExportProgress(event);
     if (['complete', 'error', 'cancelled'].includes(event.phase)) { setExportJob(undefined); setExportPending(false); }
@@ -158,6 +176,7 @@ export function App() {
 
   const estimatedSeconds = useMemo(() => estimateDuration(script), [script]);
   const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending;
+  const modelsPending = !!modelSetup && !['ready', 'bundled'].includes(modelSetup.state);
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
@@ -188,6 +207,7 @@ export function App() {
       setProgress({ jobId: 'browser', phase: 'error', progress: 0, message: '请在 VoxWeave 桌面应用中运行。', recoverable: true });
       return;
     }
+    if (modelsPending) return;
     if (plan && preview && !compositionDirty && audioDirty) { await applyAudio(); return; }
     if (status.state === 'missing') { setSettingsOpen(true); return; }
     setGeneratePending(true);
@@ -345,10 +365,21 @@ export function App() {
       <div className="brand no-drag"><span className="brand-mark"><AudioLines size={19}/></span><strong>声织</strong><small>VOXWEAVE</small></div>
       <div className="top-actions no-drag">
         <button className="library-button" aria-label={`素材库，${assets.length} 个素材`} onClick={() => setLibraryOpen(true)}><Library size={16}/> <em>素材库</em> <span>{assets.length}</span></button>
-        <button className={`engine-pill ${status.state}`} onClick={() => setSettingsOpen(true)}><i/>{status.state === 'idle' ? '本地引擎就绪' : '配置引擎'}</button>
+        <button className={`engine-pill ${status.state}`} onClick={() => setSettingsOpen(true)}><i/>{modelsPending ? '正在准备模型' : status.state === 'idle' ? '本地引擎就绪' : '配置引擎'}</button>
         <button className="icon-button" aria-label="打开引擎设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button>
       </div>
     </header>
+
+    {modelsPending && <section className="model-setup" aria-label="准备创作模型">
+      <div role="status"><strong>首次使用需要下载创作模型</strong><p>{modelSetup.message}</p>
+        <small>约 9 GB，下载完成后可离线使用。关闭应用后，下次启动会继续下载。</small>
+        <p>已准备 {modelSetup.completedFiles} / {modelSetup.totalFiles} 个文件
+          {modelSetup.state === 'downloading' && <> · {(modelSetup.downloadedBytes / 1024 ** 2).toFixed(1)} MiB
+            {modelSetup.totalBytes ? ` / ${(modelSetup.totalBytes / 1024 ** 2).toFixed(1)} MiB` : ''}</>}</p>
+        <progress aria-label="模型准备进度" value={modelSetup.completedFiles} max={modelSetup.totalFiles || 1}/>
+      </div>
+      {modelSetup.state === 'error' && <button className="secondary-button" onClick={() => void api()?.retryModelSetup()}><RefreshCw size={15}/> 重试下载</button>}
+    </section>}
 
     <main className={`creator-layout ${plan ? 'has-storyboard' : ''}`}>
       <section className="create-pane" aria-labelledby="create-title">
@@ -374,7 +405,7 @@ export function App() {
           <label><span>音色</span><select disabled={working} value={voiceId} onChange={event => setVoiceId(event.target.value)}>
             <optgroup label="内置音色">{voices.map(voice => <option key={voice.id} value={voice.id}>{voice.name} · {voice.note}</option>)}</optgroup>
             {!!clonedVoices.length && <optgroup label="我的克隆音色">{clonedVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</optgroup>}
-          </select><button type="button" className="text-action" onClick={() => setCloneOpen(true)}>克隆新音色</button></label>
+          </select><button type="button" className="text-action" disabled={modelsPending} onClick={() => setCloneOpen(true)}>克隆新音色</button></label>
           <label><span>画幅</span><select disabled={working} value={aspectRatio} onChange={event => setAspectRatio(event.target.value as typeof aspectRatio)}><option>9:16</option><option>16:9</option><option>1:1</option></select></label>
           <label><span>字幕风格</span><select disabled={working} value={captionStyle} onChange={event => setCaptionStyle(event.target.value as typeof captionStyle)}><option value="commerce-bold">电商强调</option><option value="opinion-clean">观点口播</option><option value="brand-minimal">品牌极简</option><option value="info-card">信息卡片</option></select></label>
           {plan && preview && <div className="bgm-controls">
@@ -392,7 +423,7 @@ export function App() {
 
         <div className="primary-row">
           {jobId && <button className="cancel-button" onClick={() => api()?.cancelComposition(jobId)}><Square size={14} fill="currentColor"/> 取消生成</button>}
-          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
+          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || modelsPending || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{modelsPending ? '正在准备模型…' : jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
         </div>
       </section>
 

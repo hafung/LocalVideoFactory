@@ -2,6 +2,13 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { CompositionProgressEvent, ProgressEvent, SynthesisRequest, VoxWeaveApi } from '../shared/types.js';
 
 const api: VoxWeaveApi = {
+  modelSetupStatus: () => ipcRenderer.invoke('models:status'),
+  retryModelSetup: () => ipcRenderer.invoke('models:retry'),
+  onModelSetupProgress: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, status: import('../shared/model-downloads.js').ModelSetupStatus) => listener(status);
+    ipcRenderer.on('models:progress', handler);
+    return () => ipcRenderer.removeListener('models:progress', handler);
+  },
   getStatus: () => ipcRenderer.invoke('engine:status'),
   configure: config => ipcRenderer.invoke('engine:configure', config),
   semanticStatus: () => ipcRenderer.invoke('semantic:status'),

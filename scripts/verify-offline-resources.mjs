@@ -79,7 +79,7 @@ async function listFiles(root, directory = root) {
   return files;
 }
 
-async function verifyDeclaredHashes(root, relativeManifest) {
+async function verifyDeclaredHashes(root, relativeManifest, runtimeOnly = false) {
   let manifest;
   try {
     manifest = JSON.parse(await readFile(path.join(root, relativeManifest), 'utf8'));
@@ -93,6 +93,7 @@ async function verifyDeclaredHashes(root, relativeManifest) {
   for (const descriptor of descriptors) {
     if (!descriptor || typeof descriptor.path !== 'string' || !descriptor.sha256) continue;
     const relative = normalize(path.join(path.dirname(relativeManifest), descriptor.path));
+    if (runtimeOnly && relative.startsWith('semantic/model/')) continue;
     const absolute = path.resolve(root, relative);
     if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
       failures.push(`${relativeManifest}: resource path escapes root`);
@@ -113,9 +114,14 @@ async function main() {
   const rootIndex = args.indexOf('--root');
   const root = path.resolve(rootIndex >= 0 ? args[rootIndex + 1] : path.join(process.cwd(), 'resources'));
   const writeManifest = args.includes('--write-manifest');
+  const runtimeOnly = args.includes('--runtime-only');
   const missing = [];
   const sharedCodec = await stat(path.join(root, 'models/qwen3-tts-tokenizer')).then(info => info.isDirectory()).catch(() => false);
-  const requiredFiles = sharedCodec
+  const requiredFiles = runtimeOnly
+    ? [...REQUIRED_FILES.filter(file => !file.startsWith('models/')), 'model-downloads.json',
+      'semantic/manifest.json', 'semantic/runtime/llama-server.exe', 'semantic/runtime/llama-server-impl.dll',
+      'semantic/LLAMA-LICENSE.txt', 'semantic/QWEN-LICENSE.txt']
+    : sharedCodec
     ? [...REQUIRED_FILES.filter(file => !file.includes('/speech_tokenizer/')),
       ...['config.json', 'configuration.json', 'preprocessor_config.json', 'model.safetensors'].map(file => `models/qwen3-tts-tokenizer/${file}`)]
     : REQUIRED_FILES;
@@ -135,7 +141,7 @@ async function main() {
   if (semanticPresent.some(Boolean)) {
     for (const relative of [
       'semantic/manifest.json',
-      'semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf',
+      ...(!runtimeOnly ? ['semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf'] : []),
       'semantic/runtime/llama-server.exe',
       'semantic/runtime/llama-server-impl.dll',
       'semantic/LLAMA-LICENSE.txt',
@@ -155,11 +161,13 @@ async function main() {
   const hashFailures = [
     ...await verifyDeclaredHashes(root, 'browser/manifest.json'),
     ...await verifyDeclaredHashes(root, 'engine/manifest.json'),
-    ...await verifyDeclaredHashes(root, 'models/qwen3-tts-1.7b-customvoice/manifest.json'),
-    ...await verifyDeclaredHashes(root, 'models/qwen3-tts-1.7b-base/manifest.json'),
-    ...await verifyDeclaredHashes(root, 'models/sensevoice-small/manifest.json'),
+    ...(!runtimeOnly ? [
+      ...await verifyDeclaredHashes(root, 'models/qwen3-tts-1.7b-customvoice/manifest.json'),
+      ...await verifyDeclaredHashes(root, 'models/qwen3-tts-1.7b-base/manifest.json'),
+      ...await verifyDeclaredHashes(root, 'models/sensevoice-small/manifest.json')
+    ] : []),
     ...await verifyDeclaredHashes(root, 'ffmpeg/manifest.json'),
-    ...await verifyDeclaredHashes(root, 'semantic/manifest.json')
+    ...await verifyDeclaredHashes(root, 'semantic/manifest.json', runtimeOnly)
   ];
   if (hashFailures.length) {
     console.error('Offline resource hash verification failed:');
@@ -171,8 +179,11 @@ async function main() {
   }
 
   const relativeFiles = (await listFiles(root))
-    .filter(relative => relative !== '.gitkeep' && relative !== 'offline-manifest.json')
+    .filter(relative => relative !== '.gitkeep' && relative !== 'offline-manifest.json' && relative !== 'runtime-manifest.json')
     .sort();
+  if (runtimeOnly && relativeFiles.some(file => file.startsWith('models/') || file.startsWith('semantic/model/'))) {
+    throw new Error('Online installer must not contain model resources.');
+  }
   const files = [];
   for (const relative of relativeFiles) {
     const absolute = path.join(root, relative);
@@ -182,11 +193,11 @@ async function main() {
   const manifest = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
-    layout: 'directory-portable',
+    layout: runtimeOnly ? 'installer-download-models' : 'directory-portable',
     files
   };
   if (writeManifest) {
-    await writeFile(path.join(root, 'offline-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    await writeFile(path.join(root, runtimeOnly ? 'runtime-manifest.json' : 'offline-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   }
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   console.log(`Offline resources verified: ${files.length} files, ${totalBytes} bytes${writeManifest ? '; manifest written' : ''}.`);

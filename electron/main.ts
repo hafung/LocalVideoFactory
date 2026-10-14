@@ -26,6 +26,7 @@ import { LocalLlamaEmbedder, SemanticReranker } from './library/semantic.js';
 import { selectBroll } from './library/selector.js';
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
+import { ModelDownloader } from './model-downloads.js';
 import { AUTOMATIC_NARRATION_INSTRUCTION } from '../shared/prosody.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
 import { ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, type ImportReport } from '../shared/library.js';
@@ -53,6 +54,26 @@ const previews = new PreviewRegistry();
 const allowedShellPaths = new Set<string>();
 const projectLocks = new Set<string>();
 const exportJobs = new Map<string, { renderer: HyperframesPreviewRenderer; cancelled: boolean }>();
+let modelDownloader: ModelDownloader | undefined;
+const bundledModelStatus = { state: 'bundled' as const, message: '使用内置模型', completedFiles: 0, totalFiles: 0, downloadedBytes: 0 };
+
+function initializeModelDownloader(): void {
+  const catalog = path.join(resourceRoot(), 'model-downloads.json');
+  if (!app.isPackaged || !existsSync(catalog)) return;
+  let lastMessage = '';
+  modelDownloader = new ModelDownloader(catalog, path.join(app.getPath('userData'), 'model-resources'), status => {
+    if (cliMode && status.message !== lastMessage) { console.error(status.message); lastMessage = status.message; }
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('models:progress', status);
+    }
+  });
+  app.on('before-quit', () => modelDownloader?.cancel());
+}
+
+function modelRoot(): string { return modelDownloader?.root ?? resourceRoot(); }
+function requireModelsReady(): void {
+  if (modelDownloader && modelDownloader.status.state !== 'ready') throw new Error(modelDownloader.status.message);
+}
 let waitingToQuit = false;
 app.on('before-quit', event => {
   if (!exportJobs.size) return;
@@ -91,7 +112,7 @@ function configuredPaths() {
   const bundledFfprobe = path.join(root, 'ffmpeg', 'ffprobe.exe');
   return {
     enginePath: process.env.VOXWEAVE_ENGINE ?? settings.get('enginePath') ?? path.join(root, 'engine', 'qwen_tts.exe'),
-    modelDir: narrationModelPath(root, settings.get('modelDir'), process.env.VOXWEAVE_MODEL),
+    modelDir: narrationModelPath(modelRoot(), settings.get('modelDir'), process.env.VOXWEAVE_MODEL),
     ffmpegPath: existsSync(bundledFfmpeg) ? bundledFfmpeg : process.env.VOXWEAVE_FFMPEG,
     ffprobePath: existsSync(bundledFfprobe) ? bundledFfprobe : process.env.VOXWEAVE_FFPROBE
   };
@@ -101,7 +122,7 @@ function semanticPaths(): { enginePath?: string; modelPath?: string } {
   if (settings.get('semanticEnabled') === false) return {};
   const root = path.join(resourceRoot(), 'semantic');
   const enginePath = settings.get('semanticEnginePath') || path.join(root, 'runtime', 'llama-server.exe');
-  const modelPath = settings.get('semanticModelPath') || path.join(root, 'model', 'Qwen3-Embedding-0.6B-Q8_0.gguf');
+  const modelPath = settings.get('semanticModelPath') || path.join(modelRoot(), 'semantic', 'model', 'Qwen3-Embedding-0.6B-Q8_0.gguf');
   return existsSync(enginePath) && existsSync(modelPath) ? { enginePath, modelPath } : {};
 }
 
@@ -335,12 +356,18 @@ function createWindow(): void {
 const cliMode = process.argv.includes('--cli');
 if (cliMode) {
   process.argv.splice(process.argv.indexOf('--cli'), 1);
-  process.env.VOXWEAVE_ENGINE ??= path.join(process.resourcesPath, 'engine', 'qwen_tts.exe');
-  process.env.VOXWEAVE_MODEL ??= path.join(process.resourcesPath, 'models', DEFAULT_TTS_MODEL);
-  process.env.VOXWEAVE_FFMPEG ??= path.join(process.resourcesPath, 'ffmpeg', 'ffmpeg.exe');
-  process.env.VOXWEAVE_FFPROBE ??= path.join(process.resourcesPath, 'ffmpeg', 'ffprobe.exe');
-  void import('../cli/voxweave.js');
+  void app.whenReady().then(async () => {
+    initializeModelDownloader();
+    const helpOnly = process.argv.some(value => ['--help', '-h', '--version', '-V'].includes(value));
+    if (modelDownloader && !helpOnly) { await modelDownloader.start(); requireModelsReady(); }
+    process.env.VOXWEAVE_ENGINE ??= path.join(resourceRoot(), 'engine', 'qwen_tts.exe');
+    process.env.VOXWEAVE_MODEL ??= path.join(modelRoot(), 'models', DEFAULT_TTS_MODEL);
+    process.env.VOXWEAVE_FFMPEG ??= path.join(resourceRoot(), 'ffmpeg', 'ffmpeg.exe');
+    process.env.VOXWEAVE_FFPROBE ??= path.join(resourceRoot(), 'ffmpeg', 'ffprobe.exe');
+    await import('../cli/voxweave.js');
+  }).catch(error => { console.error(error); app.exit(1); });
 } else app.whenReady().then(async () => {
+  initializeModelDownloader();
   if (await resetTtsDevelopmentData(app.getPath('userData'), settings.get('ttsSetupVersion'))) {
     settings.set('voiceProfiles', []);
     settings.delete('modelDir');
@@ -397,15 +424,20 @@ if (cliMode) {
     catch (error) { return new Response(error instanceof Error ? error.message : String(error), { status: 404 }); }
   });
 
-  ipcMain.handle('engine:status', () => configuredEngine().status());
+  ipcMain.handle('models:status', () => modelDownloader?.status ?? bundledModelStatus);
+  ipcMain.handle('models:retry', () => { if (modelDownloader) void modelDownloader.start(); });
+  ipcMain.handle('engine:status', () => modelDownloader && modelDownloader.status.state !== 'ready'
+    ? { state: 'missing', backend: 'native', message: modelDownloader.status.message }
+    : configuredEngine().status());
   ipcMain.handle('voice:list', () => settings.get('voiceProfiles') ?? []);
   ipcMain.handle('voice:clone', async (_event, value: unknown) => {
+    requireModelsReady();
     const input = z.object({ name: z.string().trim().min(1).max(60), referenceAudioPath: z.string().min(1) }).strict().parse(value);
     const id = randomUUID();
     const profile: VoiceProfile = { id, name: input.name, kind: 'clone',
       path: path.join(app.getPath('userData'), 'voices', `${id}.qvoice`), createdAt: new Date().toISOString() };
     await configuredEngine().createVoiceProfile(input.referenceAudioPath,
-      path.join(resourceRoot(), 'models', CLONE_TTS_MODEL), profile.path!);
+      path.join(modelRoot(), 'models', CLONE_TTS_MODEL), profile.path!);
     settings.set('voiceProfiles', [...(settings.get('voiceProfiles') ?? []), profile]);
     return profile;
   });
@@ -458,6 +490,7 @@ if (cliMode) {
     const plan = planDraft(request); await editPlans.save(plan); settings.set('lastProjectId', plan.id); return plan;
   });
   ipcMain.handle('composition:generate', (event, input: unknown) => {
+    requireModelsReady();
     const request = GenerateCompositionRequestSchema.parse(input) as GenerateCompositionRequest;
     const voiceProfile = (settings.get('voiceProfiles') ?? []).find(profile => profile.id === request.voiceId);
     if (voiceProfile && (!voiceProfile.path || !existsSync(voiceProfile.path))) throw new Error('克隆音色文件不存在，请重新克隆');
@@ -496,7 +529,7 @@ if (cliMode) {
         emit('narrating', 0.05 + progress.progress * 0.55, progress.message));
       emit('aligning', 0.63, '正在按最终旁白对齐字幕和分镜…');
       const alignedNarration = await alignNarration(narration, plan.scenes,
-        senseVoiceNarrationTranscriber(path.join(resourceRoot(), 'models', 'sensevoice-small')), controller.signal,
+        senseVoiceNarrationTranscriber(path.join(modelRoot(), 'models', 'sensevoice-small')), controller.signal,
         message => emit('aligning', 0.69, `该段字幕使用语音区间估时：${message}`));
       emit('resolving', 0.74, '正在按真实旁白时长解析分镜…');
       const sourceMetadata = plan.input.sourceVideoPath ? await mediaProbe.probe(plan.input.sourceVideoPath) : undefined;
@@ -748,6 +781,7 @@ if (cliMode) {
     if (job) { job.cancelled = true; await job.renderer.cancel(id); }
   });
   ipcMain.handle('engine:synthesize', (event, request: SynthesisRequest) => {
+    requireModelsReady();
     const jobId = randomUUID(); const engine = configuredEngine(); audioJobs.set(jobId, engine);
     void engine.synthesize(request, progress => event.sender.send('engine:progress', { ...progress, jobId }))
       .catch(error => event.sender.send('engine:progress', { jobId, phase: 'error', message: error instanceof Error ? error.message : String(error) }))
@@ -762,6 +796,7 @@ if (cliMode) {
     const resolved = path.resolve(target); if (!allowedShellPaths.has(resolved)) throw new Error('未授权的文件路径'); await shell.openPath(resolved);
   });
   createWindow();
+  if (modelDownloader) void modelDownloader.start();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

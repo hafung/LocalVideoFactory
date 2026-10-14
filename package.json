@@ -31,7 +31,8 @@
     "smoke:semantic:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-semantic-windows.ps1",
     "smoke:package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged-windows.ps1",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-offline.ps1",
-    "package:win:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-offline.ps1 -IncludeSetup"
+    "package:win:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1",
+    "package:win:offline-installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-offline.ps1 -IncludeSetup"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.2.8",

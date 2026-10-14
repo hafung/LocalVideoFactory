@@ -2,7 +2,8 @@
 param(
   [string]$ResourceDir,
   [string]$ModelPath,
-  [string]$ArchivePath
+  [string]$ArchivePath,
+  [switch]$RuntimeOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,13 +27,13 @@ function Assert-Hash([string]$Path, [string]$Expected) {
 
 New-Item -ItemType Directory -Force -Path $ResourceDir, $modelDir, $runtimeDir, $temporary | Out-Null
 try {
-  if (-not (Test-Path -LiteralPath $destinationModel -PathType Leaf)) {
+  if (-not $RuntimeOnly -and -not (Test-Path -LiteralPath $destinationModel -PathType Leaf)) {
     $sourceModel = if ($ModelPath) { $ModelPath } else { Join-Path $temporary $modelName }
     if (-not $ModelPath) { Invoke-WebRequest -Uri $modelUrl -OutFile $sourceModel }
     Assert-Hash $sourceModel $modelHash
     Copy-Item -LiteralPath $sourceModel -Destination $destinationModel
   }
-  Assert-Hash $destinationModel $modelHash
+  if (-not $RuntimeOnly) { Assert-Hash $destinationModel $modelHash }
 
   if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir 'llama-server.exe') -PathType Leaf)) {
     $sourceArchive = if ($ArchivePath) { $ArchivePath } else { Join-Path $temporary $archiveName }
@@ -48,10 +49,10 @@ try {
       [ordered]@{ path = "runtime/$($_.Name)"; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
   ) + @(
-    [ordered]@{ path = "model/$modelName"; sha256 = $modelHash },
     [ordered]@{ path = 'LLAMA-LICENSE.txt'; sha256 = (Get-FileHash -LiteralPath (Join-Path $ResourceDir 'LLAMA-LICENSE.txt') -Algorithm SHA256).Hash.ToLowerInvariant() },
     [ordered]@{ path = 'QWEN-LICENSE.txt'; sha256 = (Get-FileHash -LiteralPath (Join-Path $ResourceDir 'QWEN-LICENSE.txt') -Algorithm SHA256).Hash.ToLowerInvariant() }
   )
+  if (-not $RuntimeOnly) { $descriptors += [ordered]@{ path = "model/$modelName"; sha256 = $modelHash } }
   $manifest = [ordered]@{
     model = 'Qwen3-Embedding-0.6B-GGUF Q8_0'
     modelSource = $modelUrl

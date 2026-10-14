@@ -55,6 +55,7 @@ try {
   if (-not $engineInfo.sharedSpeechTokenizer) { throw 'Rebuild/import the Qwen engine with shared speech tokenizer support before packaging.' }
   # Package ordinary files once; no symlinks, first-run copying, or online download.
   $package.build.extraResources[0].filter = @('**/*',
+    '!model-downloads.json', '!runtime-manifest.json',
     '!models/qwen3-tts-1.7b-base/speech_tokenizer/**/*',
     '!models/qwen3-tts-1.7b-customvoice/speech_tokenizer/**/*')
   $package.build.extraResources += @{

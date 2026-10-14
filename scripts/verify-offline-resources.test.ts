@@ -78,6 +78,23 @@ async function fixture(): Promise<string> {
 }
 
 describe('offline resource verifier', () => {
+  it('accepts an installer runtime without model weights and rejects mixed offline resources', async () => {
+    const root = await fixture();
+    await rm(path.join(root, 'models'), { recursive: true });
+    for (const relative of ['semantic/manifest.json', 'semantic/runtime/llama-server.exe',
+      'semantic/runtime/llama-server-impl.dll', 'semantic/LLAMA-LICENSE.txt', 'semantic/QWEN-LICENSE.txt', 'model-downloads.json']) {
+      await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+      await writeFile(path.join(root, relative), relative.endsWith('.json') ? '{"files":{}}' : 'runtime fixture');
+    }
+    const args = [path.resolve('scripts/verify-offline-resources.mjs'), '--root', root, '--runtime-only', '--write-manifest'];
+    await execFileAsync(process.execPath, args);
+    const manifest = JSON.parse(await readFile(path.join(root, 'runtime-manifest.json'), 'utf8'));
+    expect(manifest.layout).toBe('installer-download-models');
+    expect(manifest.files.some((file: { path: string }) => file.path.startsWith('models/'))).toBe(false);
+    await mkdir(path.join(root, 'semantic/model'), { recursive: true });
+    await writeFile(path.join(root, 'semantic/model/accidentally-bundled.gguf'), 'unwanted weight');
+    await expect(execFileAsync(process.execPath, args)).rejects.toThrow('must not contain model');
+  });
   it('writes a hash manifest for a complete external resource directory', async () => {
     const root = await fixture();
     await execFileAsync(process.execPath, [

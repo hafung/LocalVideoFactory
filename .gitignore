@@ -29,6 +29,8 @@ resources/ffmpeg/*
 !resources/ffmpeg/README.md
 !resources/ffmpeg/manifest.json
 resources/offline-manifest.json
+resources/model-downloads.json
+resources/runtime-manifest.json
 resources/browser/chrome-headless-shell-win64/
 resources/semantic/model/
 resources/semantic/runtime/

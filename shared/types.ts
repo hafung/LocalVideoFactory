@@ -70,6 +70,9 @@ export interface GenerateCompositionRequest extends DraftPlanRequest {
 }
 
 export interface VoxWeaveApi {
+  modelSetupStatus(): Promise<import('./model-downloads.js').ModelSetupStatus>;
+  retryModelSetup(): Promise<void>;
+  onModelSetupProgress(listener: (status: import('./model-downloads.js').ModelSetupStatus) => void): () => void;
   getStatus(): Promise<EngineStatus>;
   configure(config: { enginePath?: string; modelDir?: string }): Promise<EngineStatus>;
   semanticStatus(): Promise<{ enginePath: string; modelPath: string; configured: boolean }>;

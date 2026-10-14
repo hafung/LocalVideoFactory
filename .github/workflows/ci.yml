@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,3 +30,87 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  windows-engine:
+    name: Windows native engine
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Cross-compile Qwen engine and runtime DLLs
+        run: bash scripts/build-qwen-engine-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-engine
+          path: .windows-engine-build/bundle/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  windows-installer:
+    name: Windows installer (models download on first launch)
+    needs: [app, windows-engine]
+    runs-on: windows-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag must match package.json version: v$version" }
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-engine
+          path: .windows-engine-build/bundle
+      - name: Verify native engine and prepare bundled runtimes
+        shell: pwsh
+        run: |
+          ./scripts/import-qwen-engine.ps1 -SourceDir .windows-engine-build/bundle
+          ./scripts/setup-ffmpeg.ps1 -Latest
+          ./scripts/setup-render-browser.ps1
+          ./scripts/setup-semantic.ps1 -RuntimeOnly
+      - run: pnpm package:win:installer
+      - name: Verify packaged application contains no models
+        run: node scripts/verify-offline-resources.mjs --root release/win-unpacked/resources --runtime-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoxWeave-Windows-Setup
+          path: |
+            release/VoxWeave-Setup-*-x64.exe
+            release/VoxWeave-Setup-*-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish tagged installer
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: windows-installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VoxWeave-Windows-Setup
+          path: release
+      - name: Publish installer and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "VoxWeave $GITHUB_REF_NAME" --notes 'Windows Setup includes native runtimes. On first launch it downloads approximately 9 GB of models with progress, resume, and SHA-256 verification. Once complete, creation works offline.'
+          fi
+          gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.sha256 --repo "$GITHUB_REPOSITORY"

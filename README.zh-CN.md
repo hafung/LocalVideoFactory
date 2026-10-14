@@ -13,7 +13,7 @@
 
 声织 VoxWeave 是为视频博主、播客、知识区作者、教育工作者和开发者打造的本地语音工作台。它把专注好用的桌面创作界面、可自动化的 CLI 与 Qwen3-TTS 1.7B CustomVoice 原生 CPU 推理引擎组合在一起。
 
-未发布的选题、口播文案、参考音色和生成结果都留在你的电脑里。Windows 完整离线发行包的目标是不需要 Python、WSL、单独下载模型或 NVIDIA 显卡；当前源码版仍在完成 Windows 原生引擎与真实样片验证。
+未发布的选题、口播文案、参考音色和生成结果都留在你的电脑里。Windows 安装包内置原生运行时，首次启动自动下载模型，完成后即可离线创作；无需 Python、WSL 或 NVIDIA 显卡。
 
 > **当前版本：** v0.2.1，支持 Windows x64。macOS 与 Linux 安装包在路线图中；应用层已经采用可跨平台的 Electron、React、TypeScript 与 C 技术栈。
 
@@ -21,7 +21,7 @@
 
 - **敏感文案不出本机。** 未发布脚本和真人音色无需交给第三方云服务，降低内容泄露与素材滥用风险。
 - **普通电脑也能做 AI 配音。** 支持 CPU 推理与 INT8/INT4 模式，没有独立显卡也能建立自己的本地语音工作流。
-- **下载后直接创作。** 完整离线发行包会带齐模型、原生引擎依赖和 FFmpeg，不用在客户机器上处理 Python、CUDA 或模型下载。
+- **自动准备创作环境。** 安装包带齐原生引擎、FFmpeg 和渲染运行时；首次启动自动下载模型，显示进度并支持断点续传、哈希校验和失败重试。
 - **普通文案直接配音。** 系统自动合并同段短句，由 TTS 根据文意调整语气和节奏，并补齐段落停顿；用户无需填写朗读标签。
 - **真正进入生产流程。** GUI 可快速试听与导出，CLI 可做批量旁白；支持 WAV、FLAC、MP3、Ogg/Opus、M4A/AAC。
 - **长任务也不拖死界面。** 推理运行在隔离的原生子进程中，模型加载、任务取消与异常不会把编辑器一起卡住。
@@ -40,16 +40,16 @@
 - 原声、旁白和配乐统一通过“生成视频”更新；只改音轨时复用已有旁白与分镜，完整重新生成也保留音轨选择
 - 单独导出旁白 MP3、混合音轨 MP3、SRT 和带逐词强调的 ASS 字幕
 
-## 下载并完全离线运行
+## 下载安装并准备模型
 
 前往 [GitHub Releases](https://github.com/hafung/VoxWeave/releases/latest) 下载最新版：
 
-- **Setup 安装版（推荐）：** 只在安装时展开一次资源，日常启动更快。
-- **Portable 目录版：** 下载 ZIP 后解压，模型、引擎和 FFmpeg 作为独立资源文件保留在目录中，双击应用即可启动。
+- **GitHub Setup 安装版：** 安装后启动，应用会从官方来源自动下载约 9 GB 模型，包括 Qwen3-TTS CustomVoice/Base、共享语音 tokenizer、SenseVoice/Silero VAD 和语义检索模型。首次准备需要联网并预留足够磁盘空间；界面显示进度，失败后可重试，关闭后再启动会续传。模型保存到 `%APPDATA%\voxweave\model-resources`，升级应用时复用。
+- **本地完整离线 Portable 包：** 开发者仍可通过 `pnpm package:win` 构建带齐模型的目录 ZIP。GitHub 构建改为安装包，不再把数 GB 模型放入构建附件。
 
 本地构建产物可直接双击解压目录中的 `VoxWeave.exe`；不要在 ZIP 内直接运行。
 
-当前目录发行包已通过本机打包后 EXE 样片；正式发布前仍需完成客户干净机验收。客户侧不需要 Node.js、账号、API Key、Python、WSL 或另行下载模型。设置页仍提供引擎和模型覆盖入口，方便开发者测试自定义版本。
+客户侧不需要 Node.js、账号、API Key、Python 或 WSL。模型自动准备完成后即可离线创作。设置页仍提供引擎和模型覆盖入口，方便开发者测试自定义版本；正式发布前仍需完成 Windows 干净机安装和完整下载验收。
 
 ## 命令行
 
@@ -93,7 +93,9 @@ pnpm verify:resources
 pnpm package:win
 ```
 
-`package:win` 自动构建并生成 `release\VoxWeave-Portable-<version>-x64\VoxWeave.exe`、同名 ZIP 和 SHA-256 文件；`package:win:installer` 会额外请求 NSIS Setup。两者都会先严格校验模型、原生 Qwen 引擎、依赖 DLL、FFmpeg、渲染浏览器和许可证闭包。资源已准备好时无需重新下载。打包时两套 1.7B TTS 共享 `models/qwen3-tts-tokenizer` 内的普通文件，减少约 651 MiB 解压体积；无需软链接、首次启动复制或联网。构建前须更新原生引擎以支持该布局，打包会校验引擎能力和共享资源哈希，源码下载目录仍使用原始模型布局。
+`package:win` 仍生成完整离线 Portable 目录、ZIP 和 SHA-256 文件，严格校验全部资源。`package:win:installer` 改为生成不含模型的 `release\VoxWeave-Setup-<version>-x64.exe` 和 SHA-256 文件，只打包运行时与经过验证的下载清单，构建机不需要下载模型。先准备原生 Qwen 引擎、FFmpeg、渲染浏览器和语义运行时；`scripts/setup-semantic.ps1 -RuntimeOnly` 可跳过 embedding 权重。原有完整离线 NSIS 模式保留为 `package:win:offline-installer`，受安装包体积上限约束。两种布局都共用一份语音 tokenizer，减少约 651 MiB 磁盘占用；在线安装版也减少同等下载量。
+
+GitHub Actions 在 Linux 和 Windows 检查应用，在 Linux 交叉编译 Windows Qwen 引擎，再在 Windows 构建安装包。`main` 推送、版本标签和手动运行会生成 `VoxWeave-Windows-Setup` 构建附件；推送与 `package.json` 版本一致的 `v<version>` 标签时，自动把安装包和校验文件发布到 GitHub Releases。
 
 当前开发发行物为 `release\VoxWeave-Portable-0.2.2-x64` 和同名 ZIP。0.2.1 是旧界面包，顶部“素材库”会直接打开文件选择框；0.2.2 会打开完整素材管理界面。
 
