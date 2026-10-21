@@ -135,6 +135,19 @@ async function main() {
   }
 
   const semanticModel = path.join(root, 'semantic/model');
+  const scenePlanner = path.join(root, 'scene-planner');
+  if (await stat(scenePlanner).then(info => info.isDirectory()).catch(() => false)) {
+    try {
+      const manifest = JSON.parse(await readFile(path.join(scenePlanner, 'manifest.json'), 'utf8'));
+      for (const relative of [manifest.modelFile, manifest.projectorFile]) {
+        if (typeof relative !== 'string') throw new Error('missing modelFile/projectorFile');
+        const model = path.resolve(scenePlanner, relative);
+        if (!model.startsWith(`${path.resolve(scenePlanner)}${path.sep}`) || !model.endsWith('.gguf')) throw new Error('invalid modelFile');
+        if (runtimeOnly) throw new Error('Scene model is not part of the online runtime resource set');
+        if (!(await stat(model)).isFile()) throw new Error('missing GGUF');
+      }
+    } catch { missing.push('scene-planner: manifest or declared GGUF is missing/invalid'); }
+  }
   const semanticRuntime = path.join(root, 'semantic/runtime');
   const semanticPresent = await Promise.all([semanticModel, semanticRuntime].map(directory =>
     stat(directory).then(info => info.isDirectory()).catch(() => false)));
@@ -167,7 +180,8 @@ async function main() {
       ...await verifyDeclaredHashes(root, 'models/sensevoice-small/manifest.json')
     ] : []),
     ...await verifyDeclaredHashes(root, 'ffmpeg/manifest.json'),
-    ...await verifyDeclaredHashes(root, 'semantic/manifest.json', runtimeOnly)
+    ...await verifyDeclaredHashes(root, 'semantic/manifest.json', runtimeOnly),
+    ...await verifyDeclaredHashes(root, 'scene-planner/manifest.json', runtimeOnly)
   ];
   if (hashFailures.length) {
     console.error('Offline resource hash verification failed:');

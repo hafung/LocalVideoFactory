@@ -23,7 +23,8 @@ export class PexelsClient {
   private readonly cache = new Map<string, { expires: number; items: OnlineAsset[] }>();
   constructor(private readonly apiKey: () => string, private readonly request: typeof fetch = fetch) {}
 
-  async search(input: z.input<typeof PexelsSearchSchema>): Promise<{ items: OnlineAsset[]; query: string }> {
+  async search(input: z.input<typeof PexelsSearchSchema>, signal?: AbortSignal): Promise<{ items: OnlineAsset[]; query: string }> {
+    signal?.throwIfAborted();
     const parsed = PexelsSearchSchema.parse(input);
     const query = englishSearchQuery(parsed.query);
     const cacheKey = JSON.stringify({ ...parsed, query });
@@ -33,7 +34,7 @@ export class PexelsClient {
     if (!key) throw new Error('请先在素材库设置 Pexels API Key');
     const url = new URL(parsed.type === 'image' ? 'https://api.pexels.com/v1/search' : 'https://api.pexels.com/v1/videos/search');
     url.search = new URLSearchParams({ query, per_page: '12', page: String(parsed.page), ...(parsed.orientation ? { orientation: parsed.orientation } : {}) }).toString();
-    const response = await this.request(url, { headers: { Authorization: key }, signal: AbortSignal.timeout(30000), redirect: 'error' });
+    const response = await this.request(url, { headers: { Authorization: key }, signal: AbortSignal.any([AbortSignal.timeout(30000), ...(signal ? [signal] : [])]), redirect: 'error' });
     if (!response.ok) throw new Error(response.status === 429 ? 'Pexels 请求额度已用完，请稍后再试' : response.status === 401 || response.status === 403 ? 'Pexels API Key 无效或没有访问权限' : `Pexels 搜索失败（${response.status}）`);
     const data: unknown = await response.json();
     const items: OnlineAsset[] = parsed.type === 'image'

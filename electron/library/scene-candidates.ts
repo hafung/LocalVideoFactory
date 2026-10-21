@@ -14,6 +14,7 @@ export function sceneSearchIntent(plan: EditPlan, scene: Scene, manualQuery = ''
   if (manualQuery.trim()) return { query: manualQuery.trim(), querySource: 'manual' };
   const strong = (words: string[]) => words.filter(word => !weakWords.has(word) && word.length > 1);
   const sceneWords = strong(scene.visual.intent.keywords);
+  if (scene.visual.intent.planningSource === 'llm' && sceneWords.length) return { query: sceneWords.join(' ').slice(0, 500), querySource: 'scene' };
   const storyWords = [...new Set(strong([
     ...(plan.input.visualBrief ? plan.input.visualBrief.split(/[\s,，。;；]+/u) : []),
     ...plan.input.storyKeywords,
@@ -116,5 +117,6 @@ export async function listSceneCandidates(plan: EditPlan, sceneId: string, datab
     : intent.querySource === 'none' ? '这句没有明确的画面关键词，下面按素材条件推荐；填充画面不代表语义匹配。'
     : semanticError ? '本地语义模型暂不可用，已使用关键词和素材条件继续检索。'
       : !ranked.length && !semanticScores.size ? `本地素材没有与“${intent.query}”匹配的标签；仍可手动选填充画面。` : undefined;
-  return { ...intent, candidates: candidates.slice(0, 24), notice };
+  return { ...intent, onlineQuery: options.query?.trim() || scene.visual.intent.searchQuery || intent.query,
+    candidates: candidates.slice(0, 24), notice };
 }

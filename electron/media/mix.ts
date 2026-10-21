@@ -6,7 +6,8 @@ const run = promisify(execFile);
 export interface MixOptions {
   playbackRate?: number;
   narrationVolume?: number;
-  original?: { path: string; volume: number; ducking: boolean };
+  original?: { path: string; volume: number; ducking: boolean;
+    segments?: Array<{ startMs: number; endMs: number; sourceInMs: number; sourceOutMs: number }> };
   bgm?: { path: string; volume: number; ducking: boolean };
 }
 
@@ -24,7 +25,36 @@ export function mixArguments(narration: string, output: string, durationMs: numb
 
   if (options.original) {
     args.push('-i', options.original.path);
-    filters.push(`[${nextInput++}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,volume=${options.original.volume},apad,atrim=duration=${duration}[original]`);
+    const input = nextInput++;
+    const segments = options.original.segments;
+    if (segments === undefined) {
+      filters.push(`[${input}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,volume=${options.original.volume},apad,atrim=duration=${duration}[original]`);
+    } else if (!segments.length) {
+      filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${duration}[original]`);
+    } else {
+      let previousEnd = 0;
+      for (const segment of segments) {
+        if (![segment.startMs, segment.endMs, segment.sourceInMs, segment.sourceOutMs].every(Number.isSafeInteger) ||
+          segment.startMs < previousEnd || segment.endMs > durationMs || segment.sourceInMs < 0 ||
+          segment.endMs <= segment.startMs || segment.sourceOutMs - segment.sourceInMs !== segment.endMs - segment.startMs) {
+          throw new Error('原声剪辑区间无效');
+        }
+        previousEnd = segment.endMs;
+      }
+      filters.push(`[${input}:a]aresample=48000,aformat=channel_layouts=stereo,asplit=${segments.length}${segments.map((_, i) => `[originalInput${i}]`).join('')}`);
+      const parts: string[] = [];
+      let cursor = 0;
+      segments.forEach((segment, i) => {
+        if (segment.startMs > cursor) {
+          filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${(segment.startMs - cursor) / 1000}[originalGap${i}]`);
+          parts.push(`originalGap${i}`);
+        }
+        filters.push(`[originalInput${i}]atrim=start=${segment.sourceInMs / 1000}:end=${segment.sourceOutMs / 1000},asetpts=N/SR/TB,apad,atrim=duration=${(segment.endMs - segment.startMs) / 1000}[originalPart${i}]`);
+        parts.push(`originalPart${i}`); cursor = segment.endMs;
+      });
+      const concat = parts.length > 1 ? `concat=n=${parts.length}:v=0:a=1,` : '';
+      filters.push(`${parts.map(part => `[${part}]`).join('')}${concat}volume=${options.original.volume},apad,atrim=duration=${duration}[original]`);
+    }
     if (options.original.ducking) sideCount++;
     tracks.push('original');
   }

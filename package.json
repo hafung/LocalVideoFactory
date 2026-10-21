@@ -19,6 +19,9 @@
     "start": "electron .",
     "cli": "tsx cli/voxweave.ts",
     "verify:resources": "node scripts/verify-offline-resources.mjs",
+    "setup:scene-model": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-scene-model.ps1 -Download",
+    "smoke:scene-planner": "node scripts/smoke-scene-planner.mjs",
+    "smoke:source-edits": "node scripts/smoke-source-edits.mjs --render",
     "smoke:qwen": "node scripts/smoke-qwen-engine.mjs",
     "smoke:prosody": "node scripts/smoke-prosody.mjs",
     "smoke:clone": "node scripts/smoke-clone.mjs",
@@ -32,7 +35,9 @@
     "smoke:package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged-windows.ps1",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-offline.ps1",
     "package:win:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-installer.ps1",
-    "package:win:offline-installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-offline.ps1 -IncludeSetup"
+    "package:win:offline-installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-offline.ps1 -IncludeSetup",
+    "smoke:source-content": "node scripts/smoke-source-content.mjs",
+    "start:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-local-windows.ps1"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.2.8",
@@ -44,6 +49,7 @@
     "commander": "^14.0.0",
     "electron-store": "^11.0.2",
     "gsap": "3.14.2",
+    "koffi": "^3.3.3",
     "lucide-react": "^0.468.0",
     "puppeteer": "25.10.0",
     "puppeteer-core": "25.10.0",
@@ -101,6 +107,10 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    }
+    },
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/koffi-*/**"
+    ]
   }
 }

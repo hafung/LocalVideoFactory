@@ -13,12 +13,14 @@ const WorkerResultSchema = z.object({
     text: z.string(), startMs: z.number().nonnegative(),
     endMs: z.number().positive().optional(), confidence: z.number().min(0).max(1).optional()
   }).strict()),
-  speechEndMs: z.number().positive().optional()
+  speechEndMs: z.number().positive().optional(),
+  speechSegments: z.array(z.object({ startMs: z.number().nonnegative(), endMs: z.number().positive() }).strict()).optional()
 }).strict();
 
 export interface SenseVoiceProcessResult {
   tokens: RecognizedToken[];
   speechEndMs?: number;
+  speechSegments?: Array<{ startMs: number; endMs: number }>;
 }
 
 export async function alignWithSenseVoiceProcess(
@@ -26,15 +28,17 @@ export async function alignWithSenseVoiceProcess(
   audioPath: string,
   executable = process.execPath,
   workerPath = fileURLToPath(new URL('./sensevoice-worker.js', import.meta.url)),
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sourceMode = false
 ): Promise<SenseVoiceProcessResult> {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'voxweave-sensevoice-'));
   const resultPath = path.join(temp, 'result.json');
   try {
-    await execFileAsync(executable, [workerPath, '--resources', resources, '--audio', audioPath, '--result', resultPath], {
+    await execFileAsync(executable, [workerPath, '--resources', resources, '--audio', audioPath, '--result', resultPath, ...(sourceMode ? ['--source'] : [])], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       windowsHide: true,
       signal,
+      timeout: 180_000,
       maxBuffer: 4 * 1024 * 1024
     });
     return WorkerResultSchema.parse(JSON.parse(await readFile(resultPath, 'utf8')));

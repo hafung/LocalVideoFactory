@@ -77,7 +77,9 @@ export interface VoxWeaveApi {
   configure(config: { enginePath?: string; modelDir?: string }): Promise<EngineStatus>;
   semanticStatus(): Promise<{ enginePath: string; modelPath: string; configured: boolean }>;
   configureSemantic(config: { enginePath: string; modelPath: string }): Promise<{ enginePath: string; modelPath: string; configured: boolean }>;
-  chooseFile(kind: 'audio' | 'video' | 'engine' | 'model' | 'semantic-engine' | 'semantic-model'): Promise<string | null>;
+  sceneModelStatus(): Promise<{ modelPath: string; configured: boolean }>;
+  configureSceneModel(modelPath: string): Promise<{ modelPath: string; configured: boolean }>;
+  chooseFile(kind: 'audio' | 'video' | 'engine' | 'model' | 'semantic-engine' | 'semantic-model' | 'scene-model'): Promise<string | null>;
   listVoices(): Promise<VoiceProfile[]>;
   cloneVoice(input: { name: string; referenceAudioPath: string }): Promise<VoiceProfile>;
   chooseOutput(defaultName: string, format?: AudioFormat): Promise<string | null>;

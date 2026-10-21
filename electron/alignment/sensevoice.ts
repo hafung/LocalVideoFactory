@@ -63,12 +63,25 @@ interface SherpaModule {
   }> };
 }
 
+let onnxRuntime: unknown;
+function loadSherpa(): SherpaModule {
+  if (process.platform === 'win32' && !onnxRuntime) {
+    const sherpaRequire = createRequire(require.resolve('sherpa-onnx-node'));
+    const directory = path.dirname(sherpaRequire.resolve('sherpa-onnx-win-x64'));
+    const dll = path.join(directory, 'onnxruntime.dll').replace(/\.asar([\\/])/u, '.asar.unpacked$1');
+    // Preload the exact bundled DLL before Windows can resolve the older System32 copy.
+    // Keep the library alive for all recognizers/VADs in this isolated worker.
+    onnxRuntime = (require('koffi') as { load(file: string): unknown }).load(dll);
+  }
+  return require('sherpa-onnx-node') as SherpaModule;
+}
+
 export class SenseVoiceAdapter {
   constructor(private readonly resources: SenseVoiceResources) {}
 
   async transcribe(audioPath: string, signal?: AbortSignal): Promise<RecognizedToken[]> {
     if (signal?.aborted) throw new DOMException('字幕对齐已取消', 'AbortError');
-    const sherpa = require('sherpa-onnx-node') as SherpaModule;
+    const sherpa = loadSherpa();
     const recognizer = await sherpa.OfflineRecognizer.createAsync({
       featConfig: { sampleRate: 16_000, featureDim: 80 },
       modelConfig: {
@@ -95,8 +108,8 @@ export class SenseVoiceAdapter {
     });
   }
 
-  async speechEndMs(audioPath: string): Promise<number | undefined> {
-    const sherpa = require('sherpa-onnx-node') as SherpaModule;
+  async speechRanges(audioPath: string): Promise<Array<{ startMs: number; endMs: number }>> {
+    const sherpa = loadSherpa();
     const wave = sherpa.readWave(audioPath, false);
     const sampleRate = 16_000;
     const samples = wave.sampleRate === sampleRate ? wave.samples : resampleLinear(wave.samples, wave.sampleRate, sampleRate);
@@ -109,13 +122,47 @@ export class SenseVoiceAdapter {
     }, Math.max(10, Math.ceil(samples.length / sampleRate) + 2));
     for (let offset = 0; offset < samples.length; offset += 512) vad.acceptWaveform(samples.slice(offset, offset + 512));
     vad.flush();
-    let endSample: number | undefined;
+    const ranges: Array<{ startMs: number; endMs: number }> = [];
     while (!vad.isEmpty()) {
       const segment = vad.front(false);
-      endSample = Math.max(endSample ?? 0, segment.start + segment.samples.length);
+      ranges.push({ startMs: Math.round(segment.start / sampleRate * 1000),
+        endMs: Math.round((segment.start + segment.samples.length) / sampleRate * 1000) });
       vad.pop();
     }
-    return endSample === undefined ? undefined : Math.round(endSample / sampleRate * 1000);
+    return ranges;
+  }
+
+  async speechEndMs(audioPath: string): Promise<number | undefined> {
+    return (await this.speechRanges(audioPath)).at(-1)?.endMs;
+  }
+
+  /** Decode detected speech only: music and silence must not become invented dialogue. */
+  async transcribeSpeech(audioPath: string): Promise<{ tokens: RecognizedToken[]; speechSegments: Array<{ startMs: number; endMs: number }> }> {
+    const speechSegments = await this.speechRanges(audioPath);
+    if (!speechSegments.length) return { tokens: [], speechSegments };
+    const sherpa = loadSherpa();
+    const wave = sherpa.readWave(audioPath, false);
+    const recognizer = await sherpa.OfflineRecognizer.createAsync({
+      featConfig: { sampleRate: 16_000, featureDim: 80 },
+      modelConfig: { senseVoice: { model: this.resources.model, language: 'auto', useInverseTextNormalization: 1 },
+        tokens: this.resources.tokens, numThreads: 4, provider: 'cpu', debug: 0 }
+    });
+    const tokens: RecognizedToken[] = [];
+    for (const segment of speechSegments) {
+      const offsetMs = Math.max(0, segment.startMs - 80);
+      const samples = wave.samples.slice(Math.floor(offsetMs / 1000 * wave.sampleRate),
+        Math.ceil((segment.endMs + 80) / 1000 * wave.sampleRate));
+      const stream = recognizer.createStream(); stream.acceptWaveform({ samples, sampleRate: wave.sampleRate });
+      const result = await recognizer.decodeAsync(stream);
+      for (const [index, text] of (result.tokens ?? []).entries()) {
+        const startMs = offsetMs + Math.round((result.timestamps?.[index] ?? 0) * 1000);
+        const endMs = offsetMs + Math.round(((result.timestamps?.[index] ?? 0) + (result.durations?.[index] ?? .06)) * 1000);
+        const logProbability = result.ys_log_probs?.[index];
+        if (text && !/^<.*>$/u.test(text)) tokens.push({ text, startMs, endMs: Math.max(startMs + 1, endMs),
+          confidence: logProbability === undefined ? undefined : Math.max(0, Math.min(1, Math.exp(logProbability))) });
+      }
+    }
+    return { tokens, speechSegments };
   }
 }
 

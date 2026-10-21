@@ -4,15 +4,19 @@ import type { MediaMetadata } from '../media/probe.js';
 import type { NarrationArtifact } from './narration.js';
 import { estimateCaptionCues } from './captions.js';
 import { spokenCharacterCount } from '../../shared/prosody.js';
+import { arrangeSourceScenes, originalAudioSegments, type SourceRange } from './source-edits.js';
+import { arrangeContentScenes } from './source-selection.js';
+import type { SourceContentPlan } from './source-content.js';
 
 export interface ResolvePlanOptions {
   narration: NarrationArtifact;
   sourceMetadata?: MediaMetadata;
+  sourceRanges?: SourceRange[];
+  sourceContent?: SourceContentPlan;
   now?: Date;
 }
 
-function resolvedScenes(plan: EditPlan, narration: NarrationArtifact, sourceMetadata?: MediaMetadata): Scene[] {
-  let sourceCursor = 0;
+function resolvedScenes(plan: EditPlan, narration: NarrationArtifact, sourceMetadata?: MediaMetadata, sourceRanges?: SourceRange[], sourceContent?: SourceContentPlan): Scene[] {
   const scenes: Scene[] = [];
   const byId = new Map(plan.scenes.map(scene => [scene.id, scene]));
   const actualTimings = new Map(narration.sceneTimings?.map(scene => [scene.id, scene]));
@@ -36,48 +40,19 @@ function resolvedScenes(plan: EditPlan, narration: NarrationArtifact, sourceMeta
     const draft = byId.get(segment.id)!;
     if (!draft) throw new Error(`旁白引用不存在的分镜 ${segment.id}`);
     const duration = segment.endMs - segment.startMs;
-    const sourceAvailable = plan.input.sourceVideoPath && sourceMetadata
-      ? Math.max(0, (sourceMetadata.durationMs ?? 0) - sourceCursor)
-      : 0;
-    const sourceDuration = Math.min(duration, sourceAvailable);
-    if (sourceDuration > 0) {
-      scenes.push({
-        ...draft,
-        id: sourceDuration === duration ? draft.id : `${draft.id}-source`,
-        startMs: segment.startMs,
-        endMs: segment.startMs + sourceDuration,
-        visual: {
-          ...draft.visual,
-          type: 'source',
-          assetId: 'source-video',
-          sourceInMs: sourceCursor,
-          sourceOutMs: sourceCursor + sourceDuration,
-          motion: 'none',
-          intent: { ...draft.visual.intent, minDurationMs: sourceDuration }
-        }
-      });
-      sourceCursor += sourceDuration;
-    }
-    if (sourceDuration < duration) {
-      scenes.push({
-        ...draft,
-        id: sourceDuration > 0 ? `${draft.id}-fallback` : draft.id,
-        startMs: segment.startMs + sourceDuration,
-        endMs: segment.endMs,
-        visual: {
-          ...draft.visual,
-          type: 'kinetic-text',
-          assetId: undefined,
-          sourceInMs: undefined,
-          sourceOutMs: undefined,
-          motion: 'slow-zoom-in',
-          intent: { ...draft.visual.intent, minDurationMs: duration - sourceDuration }
-        },
-        transition: sourceDuration > 0 ? 'crossfade' : draft.transition
-      });
+    const count = Math.ceil(duration / 5000);
+    for (let index = 0; index < count; index++) {
+      const startMs = segment.startMs + Math.round(duration * index / count);
+      const endMs = segment.startMs + Math.round(duration * (index + 1) / count);
+      scenes.push({ ...draft, id: count === 1 ? draft.id : `${draft.id}-shot-${index + 1}`, originSceneId: draft.id,
+        startMs, endMs, visual: { ...draft.visual, type: 'kinetic-text', assetId: undefined,
+          sourceInMs: undefined, sourceOutMs: undefined, motion: 'slow-zoom-in',
+          intent: { ...draft.visual.intent, minDurationMs: endMs - startMs } } });
     }
   }
-  return scenes;
+  return plan.input.sourceVideoPath && sourceMetadata?.durationMs
+    ? sourceContent ? arrangeContentScenes(scenes, sourceContent, plan.audio.originalEnabled)
+      : arrangeSourceScenes(scenes, sourceMetadata.durationMs, sourceRanges) : scenes;
 }
 
 export function resolveEditPlan(plan: EditPlan, options: ResolvePlanOptions): EditPlan {
@@ -86,6 +61,7 @@ export function resolveEditPlan(plan: EditPlan, options: ResolvePlanOptions): Ed
   if (plan.input.sourceVideoPath && !options.sourceMetadata) throw new Error('提供原视频时必须先探测媒体时长');
   if (plan.input.sourceVideoPath && !options.sourceMetadata?.durationMs) throw new Error('原视频缺少有效时长');
   const now = (options.now ?? new Date()).toISOString();
+  const scenes = resolvedScenes(plan, options.narration, options.sourceMetadata, options.sourceRanges, options.sourceContent);
   const resolved = {
     ...plan,
     revision: plan.revision + 1,
@@ -98,7 +74,8 @@ export function resolveEditPlan(plan: EditPlan, options: ResolvePlanOptions): Ed
       durationMs: options.narration.durationMs,
       segments: options.narration.segments
     },
-    scenes: resolvedScenes(plan, options.narration, options.sourceMetadata),
+    scenes,
+    audio: { ...plan.audio, ...(plan.input.sourceVideoPath ? { originalSegments: originalAudioSegments(scenes) } : {}) },
     captions: options.narration.captions ?? estimateCaptionCues(options.narration.segments, plan.template.captionHighlight)
   };
   return EditPlanSchema.parse(resolved);

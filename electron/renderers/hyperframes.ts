@@ -6,7 +6,7 @@ import { access, mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FfprobeMediaProbe } from '../media/probe.js';
-import { mixNarration } from '../media/mix.js';
+import { mixNarration, type MixOptions } from '../media/mix.js';
 
 export interface RendererTools { chromePath: string; ffmpegPath: string; ffprobePath: string }
 
@@ -21,12 +21,13 @@ export class HyperframesPreviewRenderer implements VideoRenderer {
       const bgm = plan.bgm.enabled && plan.bgm.assetId && this.resolveAsset
         ? { path: await this.resolveAsset(plan.bgm.assetId), volume: plan.bgm.volume, ducking: plan.bgm.ducking } : undefined;
       if (plan.bgm.enabled && plan.bgm.assetId && !bgm) throw new Error('请选择有效的配乐素材');
-      let original: { path: string; volume: number; ducking: boolean } | undefined;
+      let original: MixOptions['original'];
       if (plan.audio.originalEnabled) {
         if (!plan.input.sourceVideoPath) throw new Error('工程没有原始视频，无法保留原声');
         const metadata = await new FfprobeMediaProbe(this.tools.ffprobePath).probe(plan.input.sourceVideoPath);
         if (!metadata.hasAudio) throw new Error('原始视频没有音轨，无法保留原声');
-        original = { path: plan.input.sourceVideoPath, volume: plan.audio.originalVolume, ducking: plan.audio.originalDucking };
+        original = { path: plan.input.sourceVideoPath, volume: plan.audio.originalVolume, ducking: plan.audio.originalDucking,
+          segments: plan.audio.originalSegments };
       }
       await mixNarration(this.tools.ffmpegPath, plan.narration.audioPath, mixed, plan.narration.durationMs,
         { narrationVolume: plan.audio.narrationVolume, original, bgm, playbackRate: plan.output.playbackRate });

@@ -35,6 +35,7 @@ resources/browser/chrome-headless-shell-win64/
 resources/semantic/model/
 resources/semantic/runtime/
 resources/semantic/manifest.json
+resources/scene-planner/model/
 engine/qwen3-tts-c/*.o
 engine/qwen3-tts-c/*.d
 engine/qwen3-tts-c/*.exe

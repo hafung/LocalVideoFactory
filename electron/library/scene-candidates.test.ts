@@ -76,13 +76,13 @@ it('offers only unused original-video time ranges when replacing a source segmen
       ] } });
   const result = await listSceneCandidates(plan, plan.scenes[0].id, database);
   const sourceChoices = result.candidates.filter(candidate => candidate.asset.id === 'source-asset');
-  expect(sourceChoices.every(candidate => candidate.choice.type === 'asset' && (candidate.choice.sourceInMs ?? 0) >= 4000)).toBe(true);
+  expect(sourceChoices.every(candidate => candidate.choice.type === 'asset' && candidate.choice.sourceInMs === 2000)).toBe(true);
   expect(sourceChoices.length).toBeGreaterThan(0);
   expect(() => applySceneChoice(plan, plan.scenes[0].id,
-    { type: 'asset', assetId: 'source-asset', sourceInMs: 2000 }, database)).toThrow(/已用于其他分镜/);
+    { type: 'asset', assetId: 'source-asset', sourceInMs: 4000 }, database)).toThrow(/已用于其他分镜/);
   const changed = applySceneChoice(plan, plan.scenes[0].id,
-    { type: 'asset', assetId: 'source-asset', sourceInMs: 4000 }, database);
-  expect(changed.scenes[0].visual.sourceInMs).toBe(4000);
-  expect(changed.scenes[1].visual.sourceInMs).toBe(2000);
+    { type: 'asset', assetId: 'source-asset', sourceInMs: 2000 }, database);
+  expect(changed.scenes[0].visual.sourceInMs).toBe(2000);
+  expect(changed.scenes[1].visual.sourceInMs).toBe(4000);
   database.close();
 });

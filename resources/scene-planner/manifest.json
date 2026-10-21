@@ -1,0 +1,24 @@
+{
+  "model": "Qwen3.5-4B Q4_K_M",
+  "baseModel": "https://huggingface.co/Qwen/Qwen3.5-4B",
+  "quantizationSource": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF",
+  "revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+  "modelFile": "model/Qwen3.5-4B-Q4_K_M.gguf",
+  "files": [
+    {
+      "path": "model/Qwen3.5-4B-Q4_K_M.gguf",
+      "size": 2740937888,
+      "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+    },
+    {
+      "path": "model/mmproj-F16.gguf",
+      "size": 672423616,
+      "sha256": "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864"
+    },
+    {
+      "path": "QWEN-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  ],
+  "projectorFile": "model/mmproj-F16.gguf"
+}

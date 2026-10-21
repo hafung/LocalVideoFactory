@@ -14,6 +14,7 @@ export interface SceneCandidate {
 
 export interface SceneCandidateResult {
   query: string;
+  onlineQuery?: string;
   querySource: 'scene' | 'story' | 'manual' | 'none';
   candidates: SceneCandidate[];
   notice?: string;

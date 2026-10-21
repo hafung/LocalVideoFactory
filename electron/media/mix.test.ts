@@ -28,6 +28,20 @@ it('supports voice-only and unducked mixes and validates each level', () => {
   expect(() => mixArguments('v', 'o', 1000, { bgm: { path: 'bgm.wav', volume: 2.1, ducking: true } })).toThrow();
 });
 
+it('trims original audio to selected source ranges and positions each on the narration timeline', () => {
+  const original = { path: 'source.mp4', volume: .5, ducking: false, segments: [
+    { startMs: 0, endMs: 2000, sourceInMs: 1000, sourceOutMs: 3000 },
+    { startMs: 4000, endMs: 6000, sourceInMs: 10000, sourceOutMs: 12000 }
+  ] };
+  const args = mixArguments('voice.wav', 'mixed.wav', 8000, { original });
+  const graph = args[args.indexOf('-filter_complex') + 1];
+  expect(graph).toContain('atrim=start=1:end=3');
+  expect(graph).toContain('atrim=start=10:end=12');
+  expect(graph).toContain('anullsrc=r=48000:cl=stereo,atrim=duration=2[originalGap1]');
+  expect(graph).toContain('concat=n=3:v=0:a=1');
+  expect(() => mixArguments('v', 'm', 8000, { original: { ...original, segments: [{ ...original.segments[0], sourceOutMs: 4000 }] } })).toThrow('区间');
+});
+
 
 it('changes the duration of the entire mix without changing pitch, including slow and fast extremes', () => {
   for (const rate of [.25, .5, 1.5, 2, 4]) {

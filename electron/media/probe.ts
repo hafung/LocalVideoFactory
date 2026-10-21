@@ -42,7 +42,9 @@ export class FfprobeMediaProbe implements MediaProbe {
     const streams = payload.streams ?? [];
     const video = streams.find(stream => stream.codec_type === 'video');
     const audio = streams.find(stream => stream.codec_type === 'audio');
-    const durationSeconds = Number(payload.format?.duration ?? video?.duration ?? audio?.duration);
+    // A longer soundtrack must not make source-video selection seek past the final frame.
+    const durationSeconds = [video?.duration, payload.format?.duration, audio?.duration].map(Number)
+      .find(duration => Number.isFinite(duration) && duration > 0) ?? NaN;
     const durationMs = Number.isFinite(durationSeconds) && durationSeconds > 0
       ? Math.max(1, Math.round(durationSeconds * 1000))
       : undefined;

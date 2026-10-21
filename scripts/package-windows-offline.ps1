@@ -5,6 +5,7 @@ param(
   [string]$ProjectDir,
   [string]$ResourceDir,
   [string]$ReleaseDir,
+  [string]$SceneModelPath,
   [switch]$SkipBuild,
   [switch]$IncludeSetup
 )
@@ -39,6 +40,8 @@ if ($pnpmCli) {
 
 Push-Location $projectDir
 try {
+  & (Join-Path $sourceRoot 'scripts\setup-scene-model.ps1') -ResourceDir $resourceRoot -ModelPath $SceneModelPath
+  if (-not $?) { throw 'Scene model verification failed.' }
   if (-not $SkipBuild) {
     & $nodePath $pnpmCli run build
     if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)." }
@@ -90,6 +93,11 @@ try {
   if (-not (Test-Path (Join-Path $unpackedDir "resources\models\qwen3-tts-1.7b-base\model.safetensors"))) {
     throw "Packaged directory does not contain the 1.7B Base voice-cloning model resource."
   }
+  $sceneManifest = Get-Content (Join-Path $resourceRoot 'scene-planner\manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $packedSceneModel = Join-Path $unpackedDir ('resources\scene-planner\' + $sceneManifest.modelFile)
+  if (-not (Test-Path -LiteralPath $packedSceneModel -PathType Leaf)) { throw 'Packaged directory is missing the local scene model.' }
+  $packedProjector = Join-Path $unpackedDir ('resources\scene-planner\' + $sceneManifest.projectorFile)
+  if (-not (Test-Path -LiteralPath $packedProjector -PathType Leaf)) { throw 'Packaged directory is missing the local vision projector.' }
   Move-Item $unpackedDir $portableDir
   $applicationExe = Get-ChildItem -LiteralPath $portableDir -Filter "*.exe" -File | Select-Object -First 1
   if (-not $applicationExe) { throw "Packaged application executable is missing." }

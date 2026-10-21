@@ -44,7 +44,6 @@ type Preview = NonNullable<CompositionProgressEvent['preview']>;
 
 export function App() {
   const [script, setScript] = useState('产品很好，却一直卖不出去？问题也许不在产品，而在表达。让声织帮你把文案、旁白和画面，自动编成一条完整视频。');
-  const [visualBrief, setVisualBrief] = useState('');
   const [voiceId, setVoiceId] = useState('vivian');
   const [clonedVoices, setClonedVoices] = useState<VoiceProfile[]>([]);
   const [cloneOpen, setCloneOpen] = useState(false);
@@ -83,6 +82,8 @@ export function App() {
   const [modelDir, setModelDir] = useState('');
   const [semanticEnginePath, setSemanticEnginePath] = useState('');
   const [semanticModelPath, setSemanticModelPath] = useState('');
+  const [sceneModelPath, setSceneModelPath] = useState('');
+  const [sceneModelNotice, setSceneModelNotice] = useState('');
   const [semanticNotice, setSemanticNotice] = useState('');
   const [jobId, setJobId] = useState<string>();
   const jobRef = useRef<string | undefined>(undefined);
@@ -145,12 +146,12 @@ export function App() {
       setStatus(result); setEnginePath(result.enginePath ?? ''); setModelDir(result.modelDir ?? '');
     });
     void desktop.semanticStatus().then(result => { setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath); }).catch(() => undefined);
+    if (desktop.sceneModelStatus) void desktop.sceneModelStatus().then(result => setSceneModelPath(result.modelPath)).catch(() => undefined);
     void desktop.listAssets().then(setAssets);
     void desktop.listVoices().then(setClonedVoices);
     void desktop.resumeLastProject().then(last => {
       if (!last || receivedCompositionProgress) return;
       setPlan(last.plan); setProjectId(last.plan.id); setScript(last.plan.input.script);
-      setVisualBrief(last.plan.input.visualBrief ?? '');
       setAspectRatio(`${last.plan.canvas.width === last.plan.canvas.height ? '1:1' : last.plan.canvas.width > last.plan.canvas.height ? '16:9' : '9:16'}`);
       setCaptionStyle(last.plan.template.captionStyle);
       setCaptionHighlight(last.plan.template.captionHighlight ?? 'word');
@@ -163,6 +164,7 @@ export function App() {
       setProgress(event);
       if (event.plan) setPlan(event.plan);
       if (event.preview) { setPreview(event.preview); setPreviewError(undefined); }
+      if (event.phase === 'complete') void desktop.listAssets().then(setAssets).catch(() => undefined);
       if (event.phase === 'complete' || event.phase === 'error' || event.phase === 'cancelled') {
         jobRef.current = undefined; setJobId(undefined);
       }
@@ -191,7 +193,7 @@ export function App() {
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
-  const contentDirty = !plan || script.trim() !== plan.input.script || visualBrief.trim() !== (plan.input.visualBrief ?? '') ||
+  const contentDirty = !plan || script.trim() !== plan.input.script ||
     voiceId !== plan.narration.voiceId || sourceVideoPath !== plan.input.sourceVideoPath || captionStyle !== plan.template.captionStyle ||
     aspectRatio !== (plan.canvas.width === plan.canvas.height ? '1:1' : plan.canvas.width > plan.canvas.height ? '16:9' : '9:16');
   const compositionDirty = contentDirty || captionHighlight !== (plan?.template.captionHighlight ?? 'word');
@@ -200,7 +202,7 @@ export function App() {
     bgm: { enabled: !!bgmAsset, assetId: bgmAsset || undefined, volume: bgmVolume, ducking: bgmDucking },
     audio: { narrationVolume, originalEnabled: !!sourceVideoPath && originalEnabled, originalVolume, originalDucking }
   });
-  const sourceAsset = plan?.input.sourceVideoPath ? assets.find(asset => asset.filePath === plan.input.sourceVideoPath) : undefined;
+  const sourceAsset = sourceVideoPath ? assets.find(asset => asset.filePath === sourceVideoPath) : undefined;
   const activeStage = stages.findIndex(stage => stage.phase === progress?.phase);
   const originalVideoDurationMs = plan?.input.sourceVideoPath
     ? assets.find(asset => asset.filePath === plan.input.sourceVideoPath)?.durationMs ??
@@ -227,7 +229,7 @@ export function App() {
     setExportProgress(undefined);
     setProgress({ jobId: 'pending', phase: 'drafting', progress: 0.01, message: '正在创建本地工程…' });
     try {
-      const result = await desktop.generateComposition({ script, visualBrief, voiceId, aspectRatio, captionStyle, captionHighlight, sourceVideoPath, language: voiceLanguages[voiceId] ?? 'Chinese', precision: 'int8', ...audioSettings(), playbackRate });
+      const result = await desktop.generateComposition({ script, voiceId, aspectRatio, captionStyle, captionHighlight, sourceVideoPath, language: voiceLanguages[voiceId] ?? 'Chinese', precision: 'int8', ...audioSettings(), playbackRate });
       jobRef.current = result.jobId; setJobId(result.jobId); setProjectId(result.projectId);
     } catch (error) {
       setProgress({ jobId: 'failed', phase: 'error', progress: 0, message: error instanceof Error ? error.message : String(error), recoverable: true });
@@ -332,7 +334,7 @@ export function App() {
       const result = await api()!.listSceneCandidates(projectId, sceneId, query, throughSceneId);
       if (token !== candidateSearchToken.current) return;
       setCandidateResult(result); setCandidatePreview(result.candidates[0]);
-      void loadOnlineCandidates(result.query.split(/\s+/u).slice(0, 4).join(' '), sceneId, throughSceneId, token);
+      void loadOnlineCandidates(result.onlineQuery || result.query.split(/\s+/u).slice(0, 4).join(' '), sceneId, throughSceneId, token);
     } catch (error) { if (token === candidateSearchToken.current) setCandidateError(error instanceof Error ? error.message : String(error)); }
     finally { if (token === candidateSearchToken.current) setCandidateLoading(false); }
   }
@@ -383,6 +385,15 @@ export function App() {
     } catch (error) { setSemanticNotice(error instanceof Error ? error.message : String(error)); }
   }
 
+  async function configureSceneModel(modelPath = sceneModelPath) {
+    setSceneModelNotice('');
+    try {
+      const result = await api()!.configureSceneModel(modelPath);
+      setSceneModelPath(result.modelPath);
+      setSceneModelNotice(result.configured ? '文案分镜模型已配置；生成时会按文案自动规划画面。' : '已关闭文案分镜模型，将使用关键词规则。');
+    } catch (error) { setSceneModelNotice(error instanceof Error ? error.message : String(error)); }
+  }
+
   return <div className="app-shell">
     <header className="topbar drag-region">
       <div className="brand no-drag"><span className="brand-mark"><AudioLines size={19}/></span><strong>声织</strong><small>VOXWEAVE</small></div>
@@ -414,14 +425,13 @@ export function App() {
           <small><b>约 {estimatedSeconds || '—'} 秒</b>{script.length.toLocaleString()} / 8,000</small>
         </label>
 
-        <label className="visual-brief-field"><span>画面方向 <small>可选，用于挑选素材</small></span><input value={visualBrief} maxLength={300} onChange={event => setVisualBrief(event.target.value)} placeholder="例如：城市夜景、年轻人、街头生活" disabled={working}/><small className="visual-brief-help">按主题查找视频和图片，不会读成旁白或自动添加特效。旁白语气由文案语义决定。</small></label>
-
         <div className="source-card">
           <div className="source-copy"><span className="source-icon"><Video size={18}/></span><div><b>原始视频</b><small>可选；不添加也能用素材与动效完成视频</small></div></div>
           {sourceVideoPath ? <div className="source-selected"><span title={sourceVideoPath}>{sourceVideoPath.split(/[\\/]/u).at(-1)}</span><button aria-label="移除原始视频" onClick={() => { setSourceVideoPath(undefined); setOriginalEnabled(false); }} disabled={working}><X size={15}/></button></div>
             : <button className="secondary-button" onClick={chooseSource} disabled={working}><Upload size={15}/> 添加视频</button>}
         </div>
         {sourceError && <p className="field-error" role="alert">原始视频入库失败：{sourceError}</p>}
+        {sourceVideoPath && <p className="candidate-message">在本机分析原片画面和语音，按旁白匹配片段；不足时优先补视频，图片最多停留 2 秒。</p>}
 
         <button className="more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><Settings2 size={15}/> 更多设置{plan && preview ? ' · 音轨' : ''} <ChevronDown size={15}/></button>
         {moreOpen && <div className="settings-grid">
@@ -437,7 +447,7 @@ export function App() {
             <label>旁白音量 {Math.round(narrationVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={narrationVolume} disabled={working} onChange={event => setNarrationVolume(Number(event.target.value))}/></label>
             {plan.input.sourceVideoPath && <>
               <label><input type="checkbox" checked={originalEnabled} disabled={working || sourceAsset?.hasAudio === false} onChange={event => setOriginalEnabled(event.target.checked)}/> 保留原视频声音</label>
-              {sourceAsset?.hasAudio === false ? <small>原视频没有音轨。</small> : <small>原声从视频开头播放，到原视频结束为止；更换画面时仍会继续。</small>}
+              {sourceAsset?.hasAudio === false ? <small>原视频没有音轨。</small> : <small>原声随选中的原片段剪辑；更换画面时保留这条原声音轨。</small>}
               {originalEnabled && <><label>原声音量 {Math.round(originalVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={originalVolume} disabled={working} onChange={event => setOriginalVolume(Number(event.target.value))}/></label><label><input type="checkbox" checked={originalDucking} disabled={working} onChange={event => setOriginalDucking(event.target.checked)}/> 旁白说话时降低原声音量</label></>}
             </>}
             <label>背景音乐<select disabled={working} value={bgmAsset} onChange={event => setBgmAsset(event.target.value)}><option value="">不添加配乐</option>{assets.filter(asset => asset.type === 'audio').map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button onClick={() => setLibraryOpen(true)}>导入 BGM</button></label>
@@ -470,6 +480,7 @@ export function App() {
             {[.25, .5, .75, 1, 1.25, 1.5, 2, 3, 4].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
           </select><small>预览及导出使用相同倍速 · 约 {((preview.durationMs) / 1000).toFixed(1)} 秒</small>
         </label>}
+        {plan?.warnings?.length ? <div className="candidate-message" role="status">{plan.warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div> : null}
         {plan && preview && <div className="export-controls">
           <div className="caption-controls"><span>字幕高亮：{captionHighlight === 'phrase' ? '按短语' : captionHighlight === 'word' ? '按词' : '关闭'}</span>
             <button disabled={working || !!replacingScene || contentDirty} onClick={() => void applyCaptions()}>更新字幕高亮</button>
@@ -495,7 +506,7 @@ export function App() {
           <span className="scene-number">{String(index + 1).padStart(2, '0')}</span>
           <span className="scene-type">{scene.visual.type === 'kinetic-text' ? <Sparkles size={14}/> : scene.visual.type === 'image' ? <Image size={14}/> : <Video size={14}/>}</span>
           <div><b>{scene.script}</b><small>成片 {compositionSeconds(scene.startMs)}–{compositionSeconds(scene.endMs)} 秒 · {scene.visual.type === 'source' ? `原视频 ${((scene.visual.sourceInMs ?? 0) / 1000).toFixed(1)}–${((scene.visual.sourceOutMs ?? 0) / 1000).toFixed(1)} 秒` : scene.visual.type === 'kinetic-text' && originalVideoDurationMs && scene.startMs >= originalVideoDurationMs ? '原视频结束后的补画面' : scene.visual.type}{index > 0 && scene.visual.assetId && scene.visual.assetId === plan.scenes[index - 1].visual.assetId &&
-            (scene.visual.type === 'image' || scene.visual.sourceInMs === plan.scenes[index - 1].visual.sourceOutMs) ? ' · 延续上一画面' : ''}</small></div>
+            (scene.visual.type === 'image' || scene.visual.sourceInMs === plan.scenes[index - 1].visual.sourceOutMs) ? ' · 延续上一画面' : ''}</small>{scene.visual.type === 'source' && scene.visual.sourceMatch && <small title={scene.visual.sourceMatch.reason}>选段依据：{scene.visual.sourceMatch.reason}</small>}</div>
           <button onClick={() => openCandidates(scene.id)} disabled={working || Boolean(replacingScene)}><RefreshCw size={14}/> 换画面</button>
           {sceneNotice?.sceneId === scene.id && <p className="scene-notice" role="status">{sceneNotice.message}</p>}
         </article>)}</div>
@@ -534,7 +545,7 @@ export function App() {
             : '替换只作用于所选时间段，其他原视频时间段保持原样。'}
       </p>}
       <form className="candidate-search" onSubmit={event => { event.preventDefault(); void loadCandidates(candidateSceneId, candidateQuery); }}>
-        <label>画面关键词<input value={candidateQuery} maxLength={150} disabled={!!downloadingOnlineId || !!replacingScene} onChange={event => setCandidateQuery(event.target.value)} placeholder="留空使用整篇文案的画面方向"/></label>
+        <label>画面关键词<input value={candidateQuery} maxLength={150} disabled={!!downloadingOnlineId || !!replacingScene} onChange={event => setCandidateQuery(event.target.value)} placeholder="留空，按当前分镜自动推荐"/></label>
         <button disabled={candidateLoading || !!downloadingOnlineId || !!replacingScene} type="submit">搜索</button>
       </form>
       {candidateLoading && <p className="candidate-message" role="status">正在查找本地画面…</p>}
@@ -586,7 +597,7 @@ export function App() {
       <LibraryPanel changed={async () => setAssets(await api()!.listAssets())}/>
     </Modal>}
 
-    {settingsOpen && <Modal title="本地引擎设置" subtitle="旁白和可选语义检索都在本机运行" close={() => setSettingsOpen(false)}>
+    {settingsOpen && <Modal title="本地引擎设置" subtitle="旁白、文案分镜和可选语义检索都在本机运行" close={() => setSettingsOpen(false)}>
       <div className="settings-form"><PathField label="引擎路径" value={enginePath} placeholder="qwen_tts.exe 或 WSL 可执行文件" choose={async () => { const selected = await api()?.chooseFile('engine'); if (selected) setEnginePath(selected); }}/><PathField label="旁白模型目录" value={modelDir} placeholder="qwen3-tts-1.7b-customvoice" choose={async () => { const selected = await api()?.chooseFile('model'); if (selected) setModelDir(selected); }}/>
         <div className={`engine-summary ${status.state}`}><i/><span><b>{status.message}</b><small>文本与媒体只在本机处理。</small></span></div><button className="modal-primary" onClick={configure}>保存并检测旁白引擎</button>
         <div className="semantic-settings"><b>本地语义检索（可选）</b><small>使用 llama.cpp 的 CPU 运行器和 Qwen3 Embedding GGUF；只比较素材已有文字信息，不识别视频画面。</small></div>
@@ -594,6 +605,10 @@ export function App() {
         <PathField label="Embedding GGUF 路径" value={semanticModelPath} placeholder="选择 Qwen3-Embedding-0.6B.gguf" choose={async () => { const selected = await api()?.chooseFile('semantic-model'); if (selected) setSemanticModelPath(selected); }}/>
         {semanticNotice && <p className="candidate-message" role="status">{semanticNotice}</p>}
         <div className="semantic-actions"><button className="modal-primary" disabled={!semanticEnginePath || !semanticModelPath} onClick={() => void configureSemantic()}>启用语义检索</button><button onClick={() => void configureSemantic('', '')}>关闭</button></div>
+        <div className="semantic-settings"><b>文案分镜模型</b><small>使用 Qwen3.5-4B GGUF 理解文案；有原视频时，配合视觉投影文件在本机分析抽帧，并转写原声来选段。分析不会上传素材。便携包包含模型和视觉投影文件。</small></div>
+        <PathField label="Qwen3.5-4B GGUF" value={sceneModelPath} placeholder="选择本地 .gguf 模型文件" choose={async () => { const selected = await api()?.chooseFile('scene-model'); if (selected) setSceneModelPath(selected); }}/>
+        {sceneModelNotice && <p className="candidate-message" role="status">{sceneModelNotice}</p>}
+        <div className="semantic-actions"><button className="modal-primary" disabled={!sceneModelPath} onClick={() => void configureSceneModel()}>保存分镜模型</button><button onClick={() => void configureSceneModel('')}>使用关键词规则</button></div>
       </div>
     </Modal>}
   </div>;

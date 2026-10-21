@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, safeStorage,
 import Store from 'electron-store';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile, rm, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, rename, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
@@ -15,6 +15,7 @@ import { EditPlanStore } from './composition/project-store.js';
 import { NarrationService } from './composition/narration.js';
 import { QwenNarrationSynthesizer } from './composition/qwen-narration.js';
 import { resolveEditPlan } from './composition/resolver.js';
+import { LocalLlamaScenePlanner, type SceneSearchIntent } from './composition/scene-planner.js';
 import { FallbackMediaProbe, FfprobeMediaProbe } from './media/probe.js';
 import { HyperframesPreviewRenderer } from './renderers/hyperframes.js';
 import { PreviewRegistry } from './renderers/preview-registry.js';
@@ -23,7 +24,8 @@ import { AssetImporter, FfmpegThumbnailer } from './library/importer.js';
 import { NoReplacementAssetError, applySceneChoice, replaceSceneAsset } from './library/replace-scene.js';
 import { listSceneCandidates } from './library/scene-candidates.js';
 import { LocalLlamaEmbedder, SemanticReranker } from './library/semantic.js';
-import { selectBroll } from './library/selector.js';
+import { selectBroll, splitUnfilledScenes, fillShortLocalVideos } from './library/selector.js';
+import { fillOnlineMedia, type AutomaticMediaProvider } from './library/automatic-media.js';
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
 import { ModelDownloader } from './model-downloads.js';
@@ -35,23 +37,29 @@ import { ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, 
 import { searchAssets } from './library/search.js';
 import { automaticTags, cleanAutomaticTags } from './library/tags.js';
 import { PexelsClient, assertPexelsUrl } from './library/pexels.js';
+import { analyzeSource } from './composition/source-edits.js';
+import { resolveSceneModelPaths } from './composition/scene-model.js';
+import { analyzeSourceContent, matchSourceContent, SOURCE_CONTENT_VERSION, type SourceContentPlan } from './composition/source-content.js';
+import { alignWithSenseVoiceProcess } from './alignment/sensevoice-process.js';
 import { LANGUAGES, type AudioFormat, type CompositionProgressEvent, type GenerateCompositionRequest, type SynthesisRequest, type VoiceProfile } from '../shared/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(devServerUrl);
-if (process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT && process.env.VOXWEAVE_TEST_USER_DATA) {
+if ((process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT || process.env.VOXWEAVE_SMOKE_TEST === '1') && process.env.VOXWEAVE_TEST_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.VOXWEAVE_TEST_USER_DATA));
 }
 
 interface Settings extends EngineConfig {
   lastProjectId?: string; pexelsKeyEncrypted?: string; voiceProfiles?: VoiceProfile[];
   semanticEnginePath?: string; semanticModelPath?: string; semanticEnabled?: boolean;
+  sceneModelPath?: string; sceneModelEnabled?: boolean;
+  recentVisualAssetIds?: string[];
   ttsSetupVersion?: string;
 }
 const settings = new Store<Settings>({ name: 'settings', defaults: {} });
 const audioJobs = new Map<string, QwenEngine>();
-const compositionJobs = new Map<string, { controller: AbortController; engine: QwenEngine }>();
+const compositionJobs = new Map<string, { controller: AbortController; engine: QwenEngine; planner: LocalLlamaScenePlanner }>();
 const previews = new PreviewRegistry();
 const allowedShellPaths = new Set<string>();
 const projectLocks = new Set<string>();
@@ -128,6 +136,11 @@ function semanticPaths(): { enginePath?: string; modelPath?: string } {
   return existsSync(enginePath) && existsSync(modelPath) ? { enginePath, modelPath } : {};
 }
 
+function sceneModelPaths() {
+  return resolveSceneModelPaths(resourceRoot(), modelRoot(), process.env.VOXWEAVE_SCENE_MODEL || settings.get('sceneModelPath'),
+    settings.get('sceneModelEnabled') === false, settings.get('semanticEnginePath'));
+}
+
 function configuredEngine(overrideModelDir?: string): QwenEngine {
   const { enginePath, modelDir, ffmpegPath } = configuredPaths();
   return new QwenEngine({ enginePath, modelDir: overrideModelDir ?? modelDir, ffmpegPath });
@@ -155,11 +168,11 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
     voiceId = clonedVoice.id;
   }
   const request = JSON.stringify({
-    script: process.env.VOXWEAVE_COMPOSITION_SMOKE_SCRIPT ?? '你好。', voiceId, aspectRatio: '9:16', captionStyle: 'commerce-bold',
+    script: process.env.VOXWEAVE_COMPOSITION_SMOKE_SCRIPT ?? '你好。', sourceVideoPath: process.env.VOXWEAVE_COMPOSITION_SMOKE_SOURCE, voiceId, aspectRatio: '9:16', captionStyle: 'commerce-bold',
     language: 'Chinese', precision: 'int8', playbackRate: Number(process.env.VOXWEAVE_COMPOSITION_SMOKE_RATE ?? 1)
   });
   const result = await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('composition/player smoke timed out')), 120000);
+    const timeout = setTimeout(() => reject(new Error('composition/player smoke timed out')), 300000);
     let stopped = false;
     const finish = (callback, value) => {
       if (stopped) return;
@@ -191,6 +204,8 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
                 projectId: event.plan?.id,
                 revision: event.plan?.revision,
                 status: event.plan?.status,
+                selectedVisuals: event.plan?.scenes?.map(scene => scene.visual),
+                warnings: event.plan?.warnings ?? [],
                 captionText: event.plan?.captions?.map(cue => cue.text).join(''),
                 captionTokens: event.plan?.captions?.flatMap(cue => cue.tokens).length ?? 0,
                 alignedTokens: event.plan?.captions?.flatMap(cue => cue.tokens).filter(token => token.source === 'aligned').length ?? 0,
@@ -381,7 +396,10 @@ if (cliMode) {
   const library = new LibraryDatabase(path.join(app.getPath('userData'), 'library', 'assets.sqlite'));
   const semanticEmbedder = new LocalLlamaEmbedder(semanticPaths);
   const semanticReranker = new SemanticReranker(semanticEmbedder);
-  app.on('before-quit', () => semanticEmbedder.dispose());
+  app.on('before-quit', () => {
+    semanticEmbedder.dispose();
+    for (const job of compositionJobs.values()) { job.controller.abort(); job.engine.cancel(); job.planner.dispose(); }
+  });
   for (const asset of library.list(10000)) {
     if (asset.license.source !== 'pexels') continue;
     const autoTags = [...new Set([...automaticTags(asset), ...cleanAutomaticTags(asset.autoTags)])];
@@ -400,6 +418,16 @@ if (cliMode) {
   });
   const makeImporter = () => new AssetImporter(library, mediaProbe, path.join(app.getPath('userData'), 'library', 'derived'),
     configuredPaths().ffmpegPath ? new FfmpegThumbnailer(configuredPaths().ffmpegPath!) : undefined);
+  const downloadPexelsAsset = async (id: string, signal?: AbortSignal) => {
+    const { item, filePath } = await pexels.download(id, path.join(app.getPath('userData'), 'library', 'downloads'), signal);
+    try {
+      const asset = await makeImporter().import({ filePath, tags: item.tags,
+        license: { status: 'licensed', source: 'pexels', sourceUrl: item.sourceUrl, author: item.author, licenseUrl: 'https://www.pexels.com/license/' } });
+      if (asset.filePath !== filePath) { await rm(filePath, { force: true }); return asset; }
+      const autoTags = [...new Set([...asset.autoTags, ...item.tags])];
+      return library.upsert({ ...asset, name: item.name, autoTags, manualTags: [], tags: autoTags });
+    } catch (error) { await rm(filePath, { force: true }); throw error; }
+  };
   const makeRenderer = (plan: EditPlan) => new HyperframesPreviewRenderer(assetId => {
     if (assetId === 'source-video' && plan.input.sourceVideoPath) return plan.input.sourceVideoPath;
     const asset = library.byId(assetId);
@@ -466,8 +494,17 @@ if (cliMode) {
     settings.set('semanticEnabled', Boolean(config.enginePath && config.modelPath));
     return { ...config, configured: Boolean(config.enginePath && config.modelPath) };
   });
+  ipcMain.handle('scene-model:status', () => ({ modelPath: sceneModelPaths().modelPath ?? '', configured: Boolean(sceneModelPaths().modelPath) }));
+  ipcMain.handle('scene-model:configure', (_event, value: unknown) => {
+    if (compositionJobs.size) throw new Error('请等待当前生成完成后再更改内容模型');
+    const modelPath = z.string().trim().max(1000).parse(value);
+    if (modelPath && (!existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== '.gguf')) throw new Error('请选择有效的 GGUF 文本模型文件');
+    if (modelPath) settings.set('sceneModelPath', modelPath); else settings.delete('sceneModelPath');
+    settings.set('sceneModelEnabled', Boolean(modelPath));
+    return { modelPath, configured: Boolean(sceneModelPaths().modelPath) };
+  });
   ipcMain.handle('dialog:choose-file', async (_event, value: unknown) => {
-    const kind = z.enum(['audio', 'video', 'engine', 'model', 'semantic-engine', 'semantic-model']).parse(value);
+    const kind = z.enum(['audio', 'video', 'engine', 'model', 'semantic-engine', 'semantic-model', 'scene-model']).parse(value);
     if (kind === 'model') {
       const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: '选择 Qwen3-TTS 模型目录' });
       return result.canceled ? null : result.filePaths[0];
@@ -476,10 +513,10 @@ if (cliMode) {
       ? [{ name: '音频', extensions: ['wav', 'flac', 'mp3', 'ogg', 'opus', 'm4a', 'aac'] }]
       : kind === 'video'
         ? [{ name: '视频', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] }]
-        : kind === 'semantic-model' ? [{ name: 'GGUF 模型', extensions: ['gguf'] }]
+        : kind === 'semantic-model' || kind === 'scene-model' ? [{ name: 'GGUF 模型', extensions: ['gguf'] }]
         : kind === 'semantic-engine' ? [{ name: 'llama-server', extensions: ['exe', 'bin', '*'] }]
         : [{ name: 'Qwen3-TTS 引擎', extensions: ['exe', 'bin', '*'] }];
-    const result = await dialog.showOpenDialog({ properties: ['openFile'], filters, title: kind === 'audio' ? '选择参考音频' : kind === 'video' ? '选择原始视频' : kind === 'semantic-model' ? '选择 embedding GGUF 模型' : kind === 'semantic-engine' ? '选择 llama-server 可执行文件' : '选择 qwen_tts 引擎' });
+    const result = await dialog.showOpenDialog({ properties: ['openFile'], filters, title: kind === 'audio' ? '选择参考音频' : kind === 'video' ? '选择原始视频' : kind === 'scene-model' ? '选择文案分镜 GGUF 模型' : kind === 'semantic-model' ? '选择 embedding GGUF 模型' : kind === 'semantic-engine' ? '选择 llama-server 可执行文件' : '选择 qwen_tts 引擎' });
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('dialog:choose-output', async (_event, defaultName: string, format: AudioFormat = 'wav') => {
@@ -498,7 +535,7 @@ if (cliMode) {
     if (voiceProfile && (!voiceProfile.path || !existsSync(voiceProfile.path))) throw new Error('克隆音色文件不存在，请重新克隆');
     const { language: _language, temperature: _temperature, precision: _precision, bgm, audio, playbackRate, ...draftRequest } = request;
     const draft = planDraft(draftRequest);
-    const plan = EditPlanSchema.parse({ ...draft, bgm: bgm ?? draft.bgm,
+    let plan = EditPlanSchema.parse({ ...draft, bgm: bgm ?? draft.bgm,
       audio: audio ?? draft.audio, output: { ...draft.output, playbackRate: playbackRate ?? 1 } });
     if (plan.bgm.enabled) {
       const asset = plan.bgm.assetId && library.byId(plan.bgm.assetId);
@@ -508,14 +545,84 @@ if (cliMode) {
     const controller = new AbortController();
     const modelDir = configuredPaths().modelDir;
     const engine = configuredEngine(modelDir);
-    compositionJobs.set(jobId, { controller, engine });
+    const scenePlanner = new LocalLlamaScenePlanner(sceneModelPaths);
+    compositionJobs.set(jobId, { controller, engine, planner: scenePlanner });
     settings.set('lastProjectId', plan.id);
     const projectDir = path.join(projectsRoot, plan.id);
+    let sceneIntents = new Map<string, SceneSearchIntent>();
     const emit = (phase: CompositionProgressEvent['phase'], progress: number, message: string, extra: Partial<CompositionProgressEvent> = {}) =>
       sendComposition(event.sender, { jobId, phase, progress, message, ...extra });
     void (async () => {
       await editPlans.save(plan);
       emit('drafting', 0.04, '工程草稿已保存');
+      const sourceMetadata = plan.input.sourceVideoPath ? await mediaProbe.probe(plan.input.sourceVideoPath) : undefined;
+      if (plan.input.sourceVideoPath) emit('drafting', .04, '正在检测原片镜头和黑场…');
+      const sourceAnalysis = plan.input.sourceVideoPath && sourceMetadata?.durationMs
+        ? await analyzeSource(plan.input.sourceVideoPath, sourceMetadata.durationMs, configuredPaths().ffmpegPath, controller.signal) : undefined;
+      let sourceContent: SourceContentPlan | undefined;
+      if (plan.input.sourceVideoPath) {
+        // Missing analysis never silently falls back to a blind temporal montage.
+        sourceContent = { index: { version: SOURCE_CONTENT_VERSION, candidates: [], speech: [], speechReliable: false, warnings: [] }, matches: {} };
+      }
+      if (sceneModelPaths().modelPath) {
+        emit('drafting', 0.045, '正在理解文案并规划分镜画面…');
+        try {
+          sceneIntents = await scenePlanner.plan(plan, controller.signal);
+          if (sceneIntents.size) {
+            const scenes = plan.scenes.map(scene => {
+              const intent = sceneIntents.get(scene.id);
+              return intent ? { ...scene, visual: { ...scene.visual,
+                intent: { ...scene.visual.intent, keywords: intent.keywords.slice(0, 12), searchQuery: intent.pexelsQuery, planningSource: 'llm' } } } : scene;
+            });
+            plan = EditPlanSchema.parse({ ...plan, revision: plan.revision + 1, updatedAt: new Date().toISOString(), scenes });
+            if (sceneIntents.size < plan.scenes.length) plan = EditPlanSchema.parse({ ...plan, warnings: ['部分分镜使用文案关键词规则。'] });
+            await editPlans.save(plan);
+            emit('drafting', 0.05, `已为 ${sceneIntents.size} 个分镜生成画面意图`, { plan });
+          }
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
+          const warning = `分镜模型暂不可用，已使用关键词规则：${error instanceof Error ? error.message : String(error)}`.slice(0, 500);
+          plan = EditPlanSchema.parse({ ...plan, revision: plan.revision + 1, warnings: [warning] });
+          await editPlans.save(plan);
+          emit('drafting', 0.05, warning);
+        }
+      } else {
+        plan = EditPlanSchema.parse({ ...plan, revision: plan.revision + 1, warnings: ['未启用或未找到文案分镜模型，当前按文案关键词匹配画面。'] });
+        await editPlans.save(plan);
+      }
+      try {
+        if (plan.input.sourceVideoPath && sourceMetadata?.durationMs && sourceAnalysis) {
+          if (sourceAnalysis.warning) plan = EditPlanSchema.parse({ ...plan, warnings: [...(plan.warnings ?? []), sourceAnalysis.warning].slice(0, 30) });
+          const ffmpeg = configuredPaths().ffmpegPath;
+          if (!ffmpeg || !sceneModelPaths().modelPath) throw new Error('缺少本地内容模型或视频处理工具');
+          emit('drafting', .05, '正在分析原视频内容与语句边界…');
+          const modelPaths = sceneModelPaths();
+          const manifest = await readFile(path.join(resourceRoot(), 'scene-planner', 'manifest.json'), 'utf8').catch(() => 'custom');
+          const modelStats = await Promise.all([modelPaths.modelPath, modelPaths.projectorPath].map(async file => {
+            const info = file ? await stat(file) : undefined; return [file, info?.size, info?.mtimeMs];
+          }));
+          scenePlanner.dispose(); // Release text weights before the isolated ASR worker loads its model.
+          const index = await analyzeSourceContent({ file: plan.input.sourceVideoPath!, metadata: sourceMetadata,
+            ranges: sourceAnalysis.ranges, ffmpeg, cacheDir: path.join(app.getPath('userData'), 'cache', 'source-content'),
+            modelIdentity: `${JSON.stringify(modelStats)}:${manifest}`, model: scenePlanner,
+            transcribe: (wav, signal) => alignWithSenseVoiceProcess(path.join(modelRoot(), 'models', 'sensevoice-small'), wav,
+              process.execPath, undefined, signal, true),
+            signal: controller.signal, progress: message => emit('drafting', .05, message) });
+          sourceContent = { index, matches: {} };
+          sourceContent = await matchSourceContent(plan, index, scenePlanner, controller.signal, message => emit('drafting', .05, message));
+          plan = EditPlanSchema.parse({ ...plan, revision: plan.revision + 1, updatedAt: new Date().toISOString(),
+            warnings: [...(plan.warnings ?? []), ...sourceContent.index.warnings].slice(0, 30) });
+          await mkdir(path.join(projectDir, 'artifacts'), { recursive: true });
+          await writeFile(path.join(projectDir, 'artifacts', 'source-content.json'), JSON.stringify(sourceContent, null, 2), 'utf8');
+          await editPlans.save(plan);
+        }
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        const warning = `原片内容选段未完成，未确认匹配的时长将补充其他素材：${error instanceof Error ? error.message : String(error)}`.slice(0, 500);
+        plan = EditPlanSchema.parse({ ...plan, revision: plan.revision + 1, updatedAt: new Date().toISOString(),
+          warnings: [...(plan.warnings ?? []), warning].slice(0, 30) });
+        await editPlans.save(plan);
+      } finally { scenePlanner.dispose(); }
       const model = await describeTtsModel(modelDir);
       const voiceFingerprint = voiceProfile?.path ? createHash('sha256').update(await readFile(voiceProfile.path)).digest('hex') : 'preset';
       const narration = await new NarrationService({
@@ -534,18 +641,55 @@ if (cliMode) {
         senseVoiceNarrationTranscriber(path.join(modelRoot(), 'models', 'sensevoice-small')), controller.signal,
         message => emit('aligning', 0.69, `该段字幕使用语音区间估时：${message}`), plan.template.captionHighlight);
       emit('resolving', 0.74, '正在按真实旁白时长解析分镜…');
-      const sourceMetadata = plan.input.sourceVideoPath ? await mediaProbe.probe(plan.input.sourceVideoPath) : undefined;
-      let resolved = resolveEditPlan(plan, { narration: alignedNarration, sourceMetadata });
+      let resolved = resolveEditPlan(plan, { narration: alignedNarration, sourceMetadata, sourceRanges: sourceAnalysis?.ranges, sourceContent });
+      if (sourceContent) {
+        const retainedMs = resolved.scenes.filter(scene => scene.visual.type === 'source').reduce((sum, scene) => sum + scene.endMs - scene.startMs, 0);
+        if (retainedMs < alignedNarration.durationMs) resolved = EditPlanSchema.parse({ ...resolved,
+          warnings: [...(resolved.warnings ?? []), retainedMs
+            ? `原片按内容匹配保留 ${(retainedMs / 1000).toFixed(1)} 秒，其余时长将补充素材。`
+            : '未找到能安全匹配旁白的原片段，将使用补充素材。'].slice(0, 30) });
+      }
       await editPlans.save(resolved);
       emit('selecting', 0.78, '正在从本地素材库选择画面…');
-      const selected = selectBroll(resolved, library);
+      const selected = fillShortLocalVideos(selectBroll(resolved, library, undefined,
+        { avoidAssetIds: settings.get('recentVisualAssetIds') ?? [], videoOnly: true }), library, { avoidAssetIds: settings.get('recentVisualAssetIds') ?? [] });
       if (selected !== resolved) { resolved = selected; await editPlans.save(resolved); }
+      const onlineProvider: AutomaticMediaProvider | undefined = process.env.PEXELS_API_KEY || settings.get('pexelsKeyEncrypted') ? {
+        search: async (query, type, orientation, signal) => (await pexels.search({ query, type, page: 1, orientation }, signal)).items,
+        download: downloadPexelsAsset
+      } : undefined;
+      const selectedUrls = () => resolved.scenes.flatMap(scene => {
+        const url = scene.visual.assetId && library.byId(scene.visual.assetId)?.license.sourceUrl;
+        return url ? [url] : [];
+      });
+      if (onlineProvider) {
+        emit('selecting', 0.80, '本地素材不足的分镜，正在搜索并下载 Pexels 素材…');
+        const onlineSelected = await fillOnlineMedia(resolved, onlineProvider,
+          controller.signal, (fraction, message) => emit('selecting', .80 + .04 * fraction, message), selectedUrls(), { types: ['video'] });
+        if (onlineSelected !== resolved) { resolved = onlineSelected; await editPlans.save(resolved); }
+      }
+      const filled = selectBroll(splitUnfilledScenes(resolved), library, undefined, { avoidAssetIds: settings.get('recentVisualAssetIds') ?? [] });
+      if (filled !== resolved) { resolved = filled; await editPlans.save(resolved); }
+      if (onlineProvider && resolved.scenes.some(scene => scene.visual.type === 'kinetic-text')) {
+        const images = await fillOnlineMedia(resolved, onlineProvider, controller.signal,
+          (fraction, message) => emit('selecting', .84 + .02 * fraction, message), selectedUrls(), { types: ['image'] });
+        if (images !== resolved) { resolved = images; await editPlans.save(resolved); }
+      }
+      if (resolved.scenes.some(scene => scene.visual.type === 'kinetic-text')) {
+        resolved = EditPlanSchema.parse({ ...resolved, revision: resolved.revision + 1,
+          warnings: [...(resolved.warnings ?? []), '部分画面未找到可用素材，已使用动态文字补齐。'].slice(0, 30) });
+        await editPlans.save(resolved);
+      }
+      controller.signal.throwIfAborted();
       emit('compiling', 0.88, '正在编译固定模板预览…');
       const previewWorkspace = path.join(projectDir, 'preview', `r${resolved.revision}`);
       await mkdir(previewWorkspace, { recursive: true });
       const renderer = makeRenderer(resolved);
       const prepared = await renderer.prepare(resolved, previewWorkspace);
+      controller.signal.throwIfAborted();
       const entryUrl = previews.register(`${resolved.id}-${resolved.revision}`, previewWorkspace);
+      const usedVisualAssets = resolved.scenes.flatMap(scene => scene.visual.assetId ? [scene.visual.assetId] : []);
+      settings.set('recentVisualAssetIds', [...new Set([...usedVisualAssets, ...(settings.get('recentVisualAssetIds') ?? [])])].slice(0, 30));
       emit('complete', 1, '自动成片预览已就绪', {
         plan: resolved,
         preview: { entryUrl, durationMs: prepared.durationMs, width: resolved.canvas.width, height: resolved.canvas.height }
@@ -565,12 +709,12 @@ if (cliMode) {
         } catch { /* The last valid revision remains recoverable. */ }
       }
       emit(cancelled ? 'cancelled' : 'error', 0, cancelled ? '生成已取消，工程草稿已保留' : message, { recoverable: true, plan: failedPlan });
-    }).finally(() => compositionJobs.delete(jobId));
+    }).finally(() => { scenePlanner.dispose(); compositionJobs.delete(jobId); });
     return { jobId, projectId: plan.id };
   });
   ipcMain.handle('composition:cancel', (_event, value: unknown) => {
     const jobId = z.string().uuid().parse(value);
-    const job = compositionJobs.get(jobId); job?.controller.abort(); job?.engine.cancel();
+    const job = compositionJobs.get(jobId); job?.controller.abort(); job?.engine.cancel(); job?.planner.dispose();
   });
   ipcMain.handle('composition:resume-last', async () => {
     const projectId = settings.get('lastProjectId');
@@ -663,14 +807,7 @@ if (cliMode) {
   });
   ipcMain.handle('pexels:search', (_event, value) => pexels.search(value));
   ipcMain.handle('pexels:download', async (_event, value: unknown) => {
-    const { item, filePath } = await pexels.download(z.string().max(100).parse(value), path.join(app.getPath('userData'), 'library', 'downloads'));
-    try {
-      const asset = await makeImporter().import({ filePath, tags: item.tags,
-        license: { status: 'licensed', source: 'pexels', sourceUrl: item.sourceUrl, author: item.author, licenseUrl: 'https://www.pexels.com/license/' } });
-      if (asset.filePath !== filePath) { await rm(filePath, { force: true }); return asset; }
-      const autoTags = [...new Set([...asset.autoTags, ...item.tags])];
-      return library.upsert({ ...asset, name: item.name, autoTags, manualTags: [], tags: autoTags });
-    } catch (error) { await rm(filePath, { force: true }); throw error; }
+    return downloadPexelsAsset(z.string().max(100).parse(value));
   });
   ipcMain.handle('library:open-source', (_event, value: unknown) => shell.openExternal(assertPexelsUrl(z.string().url().parse(value), 'page')));
   ipcMain.handle('composition:captions', async (_event, idValue: unknown, value: unknown) => {
@@ -698,7 +835,7 @@ if (cliMode) {
       if (!['resolved', 'complete'].includes(plan.status)) throw new Error('请先生成预览');
       const settings = z.object({ bgm: EditPlanSchema.shape.bgm, audio: EditPlanSchema.shape.audio,
         playbackRate: z.number().min(.25).max(4).optional() }).strict().parse(value);
-      const candidate = EditPlanSchema.parse({ ...plan, bgm: settings.bgm, audio: settings.audio, status: 'resolved', revision: plan.revision + 1,
+      const candidate = EditPlanSchema.parse({ ...plan, bgm: settings.bgm, audio: { ...settings.audio, originalSegments: plan.audio.originalSegments }, status: 'resolved', revision: plan.revision + 1,
         updatedAt: new Date().toISOString(), output: { ...plan.output, playbackRate: settings.playbackRate ?? plan.output.playbackRate, outputPath: undefined } });
       if (candidate.bgm.enabled) {
         const asset = candidate.bgm.assetId && library.byId(candidate.bgm.assetId);

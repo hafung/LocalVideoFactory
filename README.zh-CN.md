@@ -74,6 +74,27 @@ pnpm install
 pnpm dev
 ```
 
+### 不打便携包，在 Windows 本地实测
+
+在项目目录打开 **Windows PowerShell**，运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-local-windows.ps1
+```
+
+脚本会在 `.windows-stage-local` 准备独立的 Windows 依赖、构建源码并打开 Electron；模型、FFmpeg 和浏览器直接复用项目的 `resources`，不复制模型，不生成 EXE 安装包或 ZIP。首次可能需要下载缺失依赖，后续复用已有依赖。每次修改源码后关闭窗口并重新执行即可。这样不会混用 WSL 的 `node_modules`。
+
+脚本优先寻找 Windows Node/pnpm，也支持 `-NodePath <node.exe>`、`-PnpmCliPath <pnpm.cjs>`；`-PrepareOnly` 只构建、不打开窗口。Windows 依赖已经独立安装在项目根目录时，也可以直接执行 `pnpm build` 后 `pnpm start`。
+
+实测建议：
+
+1. 不添加原视频，输入 2–3 句具体文案生成，确认自动选画面；联网补片使用素材库中已配置的 Pexels Key。
+2. 添加比旁白长的原视频，确认按内容选片、分镜的原片入出点与选段依据。
+3. 添加比旁白短的原视频，确认优先补视频，自动使用的图片每张不超过 2 秒。
+4. 启用原声，播放检查语句/动作剪点和原声同步，再导出一条 MP4 检查成片。
+
+首次原片分析使用本地 CPU，耗时随原片长度增加；再次使用相同原片可复用内容索引。界面的模型或素材回退提示应一并检查，避免把回退结果当作内容选片验收通过。
+
 质量检查：
 
 ```bash

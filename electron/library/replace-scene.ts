@@ -46,9 +46,11 @@ export function applySceneChoice(plan: EditPlan, sceneId: string, choice: SceneC
     ...item,
     visual: choice.type === 'kinetic-text' ? {
       ...item.visual, type: 'kinetic-text' as const, assetId: undefined, sourceInMs: undefined, sourceOutMs: undefined,
+      sourceMatch: undefined,
       motion: 'slow-zoom-in' as const
     } : {
       ...item.visual, type: asset!.type as 'video' | 'image', assetId: asset!.id,
+      sourceMatch: undefined,
       sourceInMs: asset!.type === 'video' ? (choice.sourceInMs ?? 0) + item.startMs - scene.startMs : undefined,
       sourceOutMs: asset!.type === 'video' ? (choice.sourceInMs ?? 0) + item.endMs - scene.startMs : undefined,
       motion: asset!.type === 'image' ? 'slow-zoom-in' as const : 'none' as const
@@ -89,6 +91,7 @@ export function replaceSceneAsset(plan: EditPlan, sceneId: string, database: Lib
     ...item,
     visual: {
       ...item.visual, type: selected.type as 'video' | 'image', assetId: selected.id,
+      sourceMatch: undefined,
       sourceInMs: selected.type === 'video' ? 0 : undefined,
       sourceOutMs: selected.type === 'video' ? item.endMs - item.startMs : undefined,
       motion: selected.type === 'image' ? 'slow-zoom-in' as const : 'none' as const,

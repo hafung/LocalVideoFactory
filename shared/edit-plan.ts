@@ -81,6 +81,8 @@ export const CaptionCueSchema = z.object({
 
 export const VisualIntentSchema = z.object({
   keywords: z.array(z.string().trim().min(1)).max(12),
+  searchQuery: z.string().trim().min(1).max(150).optional(),
+  planningSource: z.enum(['rule', 'llm']).optional(),
   mood: z.array(z.string().trim().min(1)).max(6).default([]),
   preferredTypes: z.array(z.enum(['source', 'video', 'image', 'kinetic-text'])).min(1),
   avoidAssetIds: z.array(z.string()).default([]),
@@ -93,6 +95,10 @@ export const VisualSelectionSchema = z.object({
   assetId: z.string().min(1).optional(),
   sourceInMs: milliseconds.optional(),
   sourceOutMs: milliseconds.optional(),
+  sourceMatch: z.object({
+    candidateId: z.string().min(1), relevance: z.number().min(0).max(1), reason: z.string().min(1).max(300),
+    evidence: z.enum(['vision', 'transcript'])
+  }).strict().optional(),
   fit: z.enum(['cover', 'contain']).default('cover'),
   motion: z.enum(['none', 'slow-zoom-in', 'slow-zoom-out', 'pan-left', 'pan-right']).default('none'),
   intent: VisualIntentSchema
@@ -104,6 +110,7 @@ export const VisualSelectionSchema = z.object({
 
 export const SceneSchema = z.object({
   id: z.string().min(1),
+  originSceneId: z.string().min(1).optional(),
   startMs: milliseconds,
   endMs: milliseconds,
   script: z.string().min(1),
@@ -179,7 +186,12 @@ export const EditPlanSchema = z.object({
     narrationVolume: z.number().min(0).max(2),
     originalEnabled: z.boolean(),
     originalVolume: z.number().min(0).max(2),
-    originalDucking: z.boolean()
+    originalDucking: z.boolean(),
+    originalSegments: z.array(z.object({
+      startMs: milliseconds, endMs: milliseconds,
+      sourceInMs: milliseconds, sourceOutMs: milliseconds
+    }).strict().refine(segment => segment.endMs > segment.startMs &&
+      segment.sourceOutMs - segment.sourceInMs === segment.endMs - segment.startMs, '原声片段时长必须对应剪辑区间')).optional()
   }).strict().default({ narrationVolume: 1, originalEnabled: false, originalVolume: 0.35, originalDucking: true }),
   output: z.object({
     format: z.literal('mp4'),
@@ -188,7 +200,8 @@ export const EditPlanSchema = z.object({
     audioCodec: z.literal('aac'),
     outputPath: nonEmptyPath.optional()
   }).strict(),
-  error: z.object({ code: z.string().min(1), message: z.string().min(1) }).strict().optional()
+  error: z.object({ code: z.string().min(1), message: z.string().min(1) }).strict().optional(),
+  warnings: z.array(z.string().max(500)).max(30).optional()
 }).strict().superRefine((plan, context) => {
   let previousEnd = 0;
   for (const [index, scene] of plan.scenes.entries()) {
@@ -206,6 +219,13 @@ export const EditPlanSchema = z.object({
       context.addIssue({ code: 'custom', message: 'resolved 及后续状态的媒体分镜必须解析到素材', path: ['scenes'] });
     }
     if (plan.narration.durationMs) {
+      let previousOriginalEnd = 0;
+      for (const segment of plan.audio.originalSegments ?? []) {
+        if (segment.startMs < previousOriginalEnd || segment.endMs > plan.narration.durationMs) {
+          context.addIssue({ code: 'custom', message: '原声剪辑区间必须有序且位于成片时长内', path: ['audio', 'originalSegments'] });
+        }
+        previousOriginalEnd = segment.endMs;
+      }
       if (plan.scenes[0]?.startMs !== 0) {
         context.addIssue({ code: 'custom', message: '已解析分镜必须从 0ms 开始', path: ['scenes', 0, 'startMs'] });
       }
@@ -292,6 +312,7 @@ export function createDraftEditPlan(input: CreateDraftEditPlanInput): EditPlan {
         fit: 'cover',
         motion: input.sourceVideoPath ? 'none' : 'slow-zoom-in',
         intent: {
+          planningSource: 'rule',
           keywords: input.keywords?.(chunk).slice(0, 12) ?? [],
           mood: [],
           preferredTypes: input.sourceVideoPath

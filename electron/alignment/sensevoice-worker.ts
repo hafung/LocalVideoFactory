@@ -14,6 +14,11 @@ async function main(): Promise<void> {
   const audioPath = requiredOption('--audio');
   const resultPath = requiredOption('--result');
   const adapter = new SenseVoiceAdapter(resources);
+  if (process.argv.includes('--source')) {
+    const result = await adapter.transcribeSpeech(audioPath);
+    await writeFile(resultPath, `${JSON.stringify({ ...result, speechEndMs: result.speechSegments.at(-1)?.endMs })}\n`, 'utf8');
+    return;
+  }
   const [tokens, speechEndMs] = await Promise.all([
     adapter.transcribe(audioPath),
     adapter.speechEndMs(audioPath)
