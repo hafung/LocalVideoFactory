@@ -3,7 +3,7 @@ import { access, copyFile, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { CaptionCue, EditPlan } from '../../shared/edit-plan.js';
 import { composeSpeechWav } from '../../shared/wav.js';
-import { PROSODY_VERSION } from '../../shared/prosody.js';
+import { DEFAULT_NARRATION_SEED, PROSODY_VERSION } from '../../shared/prosody.js';
 import type { MediaProbe } from '../media/probe.js';
 
 export interface NarrationVoiceOptions {
@@ -82,16 +82,19 @@ export class NarrationService {
     const chunks = plan.narration.chunks ?? plan.scenes.map(scene => ({
       id: scene.id, text: scene.script, sceneIds: [scene.id], pauseBeforeMs: 0, pauseAfterMs: 0
     }));
+    // Every independent engine process must use the same sampling seed. Include
+    // that resolved seed in the cache key as well as the synthesis request.
+    const voice = { ...this.options.voice, seed: this.options.voice.seed ?? DEFAULT_NARRATION_SEED };
     const generated: Array<{ id: string; text: string; file: string; sceneIds: string[]; pauseBeforeMs: number; pauseAfterMs: number }> = [];
     for (const [index, chunk] of chunks.entries()) {
       if (signal?.aborted) throw abortError();
-      const key = narrationCacheKey(chunk.text, plan.narration.voiceId, this.options.voice);
+      const key = narrationCacheKey(chunk.text, plan.narration.voiceId, voice);
       const cached = path.join(this.options.cacheDir, `${key}.wav`);
       if (!await exists(cached)) {
         const pending = path.join(this.options.cacheDir, `.${key}.${randomUUID()}.wav`);
         try {
           await this.options.synthesizer.synthesize({
-            ...this.options.voice,
+            ...voice,
             text: chunk.text,
             voiceId: plan.narration.voiceId,
             outputPath: pending,

@@ -28,6 +28,13 @@ describe('EditPlanSchema', () => {
     expect(withSource.scenes[0].visual).toMatchObject({ type: 'source', assetId: 'source-video' });
   });
 
+  it('keeps line-wrapped narration together without merging its visual scenes', () => {
+    const plan = createDraftEditPlan({ id: 'wrapped', script: '第一句。\n第二句！\n第三句？', voiceId: 'vivian' });
+    expect(plan.scenes.map(scene => scene.script)).toEqual(['第一句。', '第二句！', '第三句？']);
+    expect(plan.narration.chunks).toHaveLength(1);
+    expect(plan.narration.chunks![0].sceneIds).toEqual(plan.scenes.map(scene => scene.id));
+  });
+
   it('rejects overlapping scenes', () => {
     const plan = createDraftEditPlan({ id: 'plan-2', script: '第一句。第二句。', voiceId: 'vivian' });
     const invalid = structuredClone(plan);

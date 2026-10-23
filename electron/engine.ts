@@ -7,7 +7,7 @@ import os from 'node:os';
 import type { AudioFormat, EngineStatus, ProgressEvent, SynthesisRequest } from '../shared/types.js';
 import { parseMarkedText } from '../shared/markup.js';
 import { composeSpeechWav, composeWav } from '../shared/wav.js';
-import { AUTOMATIC_NARRATION_INSTRUCTION, planSpeech } from '../shared/prosody.js';
+import { DEFAULT_NARRATION_SEED, planSpeech } from '../shared/prosody.js';
 import { CLONE_TTS_MODEL, assertVoiceProfile17B, describeTtsModel } from './tts-model.js';
 
 export interface EngineConfig { enginePath?: string; modelDir?: string; ffmpegPath?: string; preferWsl?: boolean }
@@ -131,13 +131,13 @@ export class QwenEngine {
     const status = await this.status(request.modelDir);
     if (status.state === 'missing') throw new Error(status.message);
     let instruct = request.instruct;
-    if (request.automaticProsody !== false && !instruct) instruct = AUTOMATIC_NARRATION_INSTRUCTION;
     if (instruct) {
       const descriptor = await describeTtsModel(request.modelDir ?? this.config.modelDir!).catch(() => undefined);
       if (!descriptor?.instructionControl) instruct = undefined;
     }
-    const renderRequest = { ...request, instruct };
     const automatic = request.automaticProsody !== false;
+    const renderRequest = { ...request, instruct,
+      seed: request.seed ?? (automatic ? DEFAULT_NARRATION_SEED : undefined) };
     const chunks = automatic ? planSpeech(request.text) : undefined;
     const segments = parseMarkedText(request.text);
     if (!segments.some(segment => segment.kind === 'speech')) throw new Error('请输入要合成的文本');

@@ -1,7 +1,7 @@
 import { parseMarkedText } from './markup.js';
 
-export const AUTOMATIC_NARRATION_INSTRUCTION = 'Read the text naturally and expressively. Let its meaning guide your emotion, emphasis, speaking pace, and pauses. Keep the expression appropriate and restrained, with clear pronunciation. Read every word as written; do not add words or read these instructions aloud.';
-export const PROSODY_VERSION = 'natural-paragraphs-v1';
+export const DEFAULT_NARRATION_SEED = 42;
+export const PROSODY_VERSION = 'context-narration-v4';
 
 export interface SpeechChunk {
   text: string;
@@ -42,7 +42,10 @@ export function planSpeech(text: string): SpeechChunk[] {
       else leadingPause += segment.milliseconds;
       continue;
     }
-    const paragraphs = segment.text.split(/\r?\n+/u).filter(paragraph => paragraph.trim());
+    // A single line break often just wraps a script. Keep its sentences in the
+    // same generation so the model retains the narrator's voice and delivery.
+    // Blank lines and explicit pause markup still create paragraph boundaries.
+    const paragraphs = segment.text.split(/\r?\n[\t ]*\r?\n(?:[\t ]*\r?\n)*/u).filter(paragraph => paragraph.trim());
     for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
       const sentences = [...sentenceSegmenter.segment(paragraph)]
         .flatMap(item => splitLongSentence(item.segment)).filter(sentence => sentence.trim());

@@ -24,6 +24,7 @@
     "smoke:source-edits": "node scripts/smoke-source-edits.mjs --render",
     "smoke:qwen": "node scripts/smoke-qwen-engine.mjs",
     "smoke:prosody": "node scripts/smoke-prosody.mjs",
+    "smoke:narration-consistency": "node scripts/smoke-narration-consistency.mjs",
     "smoke:clone": "node scripts/smoke-clone.mjs",
     "smoke:sensevoice": "node scripts/smoke-sensevoice.mjs",
     "smoke:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1",

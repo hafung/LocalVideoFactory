@@ -16,7 +16,6 @@ const { NarrationService } = await load('electron/composition/narration.js');
 const { QwenNarrationSynthesizer } = await load('electron/composition/qwen-narration.js');
 const { WavMediaProbe } = await load('electron/media/probe.js');
 const { createDraftEditPlan, EditPlanSchema } = await load('shared/edit-plan.js');
-const { AUTOMATIC_NARRATION_INSTRUCTION } = await load('shared/prosody.js');
 const { describeTtsModel } = await load('electron/tts-model.js');
 const { alignNarration, senseVoiceNarrationTranscriber } = await load('electron/alignment/narration.js');
 const { resolveEditPlan } = await load('electron/composition/resolver.js');
@@ -42,7 +41,6 @@ for (const name of models) {
 const modelDir = path.join(resources, 'models', models[0]);
 const engine = new QwenEngine({ enginePath, modelDir });
 const model = await describeTtsModel(modelDir);
-if (!model.instructionControl) throw new Error('The default model does not support instruction control.');
 const plan = createDraftEditPlan({ id: 'automatic-prosody-smoke', script, voiceId: 'vivian' });
 const warnings = [];
 const start = performance.now();
@@ -52,7 +50,7 @@ let narration;
 try {
   narration = await new NarrationService({ cacheDir, synthesizer: new QwenNarrationSynthesizer(engine),
     probe, voice: { language: 'Chinese', temperature: .5, topK: 50, topP: 1, seed: 42, precision: 'int8',
-      engineVersion: 'qwen3-tts-c-v0.2.1', modelVersion: model.identity, instruct: AUTOMATIC_NARRATION_INSTRUCTION }
+      engineVersion: 'qwen3-tts-c-v0.2.1', modelVersion: model.identity }
   }).generate(plan, path.join(output, 'automatic'), undefined, event => console.log(event.message));
 } finally {
   await rm(cacheDir, { recursive: true, force: true });

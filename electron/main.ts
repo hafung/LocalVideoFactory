@@ -29,7 +29,6 @@ import { fillOnlineMedia, type AutomaticMediaProvider } from './library/automati
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
 import { ModelDownloader } from './model-downloads.js';
-import { AUTOMATIC_NARRATION_INSTRUCTION } from '../shared/prosody.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
 import { CaptionHighlightSchema } from '../shared/edit-plan.js';
 import { updateCaptionHighlight } from './composition/caption-editing.js';
@@ -631,8 +630,7 @@ if (cliMode) {
         voice: {
           language: request.language ?? 'Chinese', temperature: request.temperature ?? 0.5,
           topK: 50, topP: 1, precision: request.precision ?? 'int8',
-          engineVersion: 'qwen3-tts-c-v0.2.1', modelVersion: `${model.identity}:${voiceFingerprint}`,
-          instruct: model.instructionControl ? AUTOMATIC_NARRATION_INSTRUCTION : undefined
+          engineVersion: 'qwen3-tts-c-v0.2.1', modelVersion: `${model.identity}:${voiceFingerprint}`
         }
       }).generate(plan, path.join(projectDir, 'artifacts'), controller.signal, progress =>
         emit('narrating', 0.05 + progress.progress * 0.55, progress.message));
