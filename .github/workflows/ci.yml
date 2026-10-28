@@ -87,7 +87,7 @@ jobs:
         run: node scripts/verify-offline-resources.mjs --root release/win-unpacked/resources --runtime-only
       - uses: actions/upload-artifact@v4
         with:
-          name: VoxWeave-Windows-Setup
+          name: LocalVideoFactory-Windows-Setup
           path: |
             release/VoxWeave-Setup-*-x64.exe
             release/VoxWeave-Setup-*-x64.exe.sha256
@@ -104,13 +104,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: VoxWeave-Windows-Setup
+          name: LocalVideoFactory-Windows-Setup
           path: release
       - name: Publish installer and checksum
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "VoxWeave $GITHUB_REF_NAME" --notes 'Windows Setup includes native runtimes. On first launch it downloads approximately 9 GB of models with progress, resume, and SHA-256 verification. Once complete, creation works offline.'
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "LocalVideoFactory $GITHUB_REF_NAME" --notes 'Local AI short-video creation studio. The Windows installer retains the VoxWeave filename for compatibility. On first launch it downloads approximately 9 GB of speech and retrieval models with progress, resume, and SHA-256 verification. Multimodal storyboarding requires separate scene-model setup. Once models and local media are ready, the core creation workflow works offline.'
           fi
           gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.sha256 --repo "$GITHUB_REPOSITORY"

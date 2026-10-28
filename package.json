@@ -3,7 +3,15 @@
   "version": "0.2.8",
   "packageManager": "pnpm@10.33.0",
   "private": true,
-  "description": "声织 VoxWeave — local-first automatic video creation studio",
+  "description": "LocalVideoFactory · 本地 AI 短视频工厂 — script-to-video, multimodal editing, voice cloning, captions and open music",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hafung/LocalVideoFactory.git"
+  },
+  "homepage": "https://github.com/hafung/LocalVideoFactory#readme",
+  "bugs": {
+    "url": "https://github.com/hafung/LocalVideoFactory/issues"
+  },
   "author": "VoxWeave Contributors",
   "main": "dist-electron/electron/main.js",
   "bin": {
@@ -31,6 +39,7 @@
     "smoke:composition:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-composition-windows.ps1",
     "smoke:export:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-export-windows.ps1",
     "smoke:library:ui": "node scripts/smoke-library-ui.mjs",
+    "smoke:music:ui": "node scripts/smoke-music-ui.mjs",
     "smoke:scene-picker:ui": "node scripts/smoke-scene-picker-ui.mjs",
     "smoke:semantic:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-semantic-windows.ps1",
     "smoke:package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged-windows.ps1",

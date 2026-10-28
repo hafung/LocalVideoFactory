@@ -32,10 +32,11 @@ import { ModelDownloader } from './model-downloads.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
 import { CaptionHighlightSchema } from '../shared/edit-plan.js';
 import { updateCaptionHighlight } from './composition/caption-editing.js';
-import { ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, type ImportReport } from '../shared/library.js';
+import { AssetTypeSchema, ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, type ImportReport } from '../shared/library.js';
 import { searchAssets } from './library/search.js';
-import { automaticTags, cleanAutomaticTags } from './library/tags.js';
+import { refreshedAutomaticTags } from './library/tags.js';
 import { PexelsClient, assertPexelsUrl } from './library/pexels.js';
+import { OpenverseClient, assertMusicUrl, musicLicense } from './library/openverse.js';
 import { analyzeSource } from './composition/source-edits.js';
 import { resolveSceneModelPaths } from './composition/scene-model.js';
 import { analyzeSourceContent, matchSourceContent, SOURCE_CONTENT_VERSION, type SourceContentPlan } from './composition/source-content.js';
@@ -400,8 +401,8 @@ if (cliMode) {
     for (const job of compositionJobs.values()) { job.controller.abort(); job.engine.cancel(); job.planner.dispose(); }
   });
   for (const asset of library.list(10000)) {
-    if (asset.license.source !== 'pexels') continue;
-    const autoTags = [...new Set([...automaticTags(asset), ...cleanAutomaticTags(asset.autoTags)])];
+    if (!['pexels', 'openverse'].includes(asset.license.source)) continue;
+    const autoTags = refreshedAutomaticTags(asset);
     if (JSON.stringify(autoTags) !== JSON.stringify(asset.autoTags)) {
       library.upsert({ ...asset, autoTags, tags: [...new Set([...autoTags, ...asset.manualTags])] });
     }
@@ -417,6 +418,7 @@ if (cliMode) {
   });
   const makeImporter = () => new AssetImporter(library, mediaProbe, path.join(app.getPath('userData'), 'library', 'derived'),
     configuredPaths().ffmpegPath ? new FfmpegThumbnailer(configuredPaths().ffmpegPath!) : undefined);
+  const music = new OpenverseClient((input, init) => net.fetch(input instanceof Request ? input : String(input), init));
   const downloadPexelsAsset = async (id: string, signal?: AbortSignal) => {
     const { item, filePath } = await pexels.download(id, path.join(app.getPath('userData'), 'library', 'downloads'), signal);
     try {
@@ -761,8 +763,15 @@ if (cliMode) {
     return { status: 'replaced' as const, ...result };
     } finally { projectLocks.delete(projectId); }
   });
-  ipcMain.handle('library:import', async () => {
-    const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'], title: '导入本地素材', filters: [{ name: '媒体素材', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'jpg', 'jpeg', 'png', 'webp', 'avif', 'gif', 'wav', 'flac', 'mp3', 'm4a', 'ogg', 'opus', 'aac'] }] });
+  ipcMain.handle('library:import', async (_event, value: unknown) => {
+    const type = AssetTypeSchema.optional().parse(value);
+    const mediaFilters = {
+      video: { name: '视频', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] },
+      image: { name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif'] },
+      audio: { name: '音频', extensions: ['wav', 'flac', 'mp3', 'm4a', 'ogg', 'opus', 'aac'] }
+    };
+    const filter = type ? mediaFilters[type] : { name: '媒体素材', extensions: Object.values(mediaFilters).flatMap(item => item.extensions) };
+    const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'], title: type === 'audio' ? '导入本地 BGM / 音频' : '导入本地素材', filters: [filter] });
     const report: ImportReport = { assets: [], errors: [] };
     if (result.canceled) return report;
     const importer = makeImporter();
@@ -788,7 +797,7 @@ if (cliMode) {
   ipcMain.handle('library:auto-tags', (_event, values: unknown) => {
     for (const id of idsSchema.parse(values)) {
       const asset = library.byId(id); if (!asset) continue;
-      const autoTags = [...new Set([...automaticTags(asset), ...(asset.license.source === 'pexels' ? cleanAutomaticTags(asset.autoTags) : [])])];
+      const autoTags = refreshedAutomaticTags(asset);
       library.upsert({ ...asset, autoTags, tags: [...new Set([...autoTags, ...asset.manualTags])] });
     }
   });
@@ -807,7 +816,22 @@ if (cliMode) {
   ipcMain.handle('pexels:download', async (_event, value: unknown) => {
     return downloadPexelsAsset(z.string().max(100).parse(value));
   });
-  ipcMain.handle('library:open-source', (_event, value: unknown) => shell.openExternal(assertPexelsUrl(z.string().url().parse(value), 'page')));
+  ipcMain.handle('music:search', (_event, value) => music.search(value));
+  ipcMain.handle('music:download', async (_event, value: unknown) => {
+    const { item, filePath } = await music.download(z.string().uuid().parse(value), path.join(app.getPath('userData'), 'library', 'downloads'));
+    try {
+      if (!(await mediaProbe.probe(filePath)).hasAudio) throw new Error('下载的文件没有可用音频');
+      const asset = await makeImporter().import({ filePath, tags: item.tags, license: musicLicense(item) });
+      if (asset.filePath !== filePath) { await rm(filePath, { force: true }); return asset; }
+      const autoTags = [...new Set([...asset.autoTags, ...item.tags])];
+      return library.upsert({ ...asset, name: item.name, autoTags, manualTags: [], tags: autoTags });
+    } catch (error) { await rm(filePath, { force: true }); throw error; }
+  });
+  ipcMain.handle('library:open-source', (_event, value: unknown) => {
+    const url = z.string().url().parse(value);
+    try { assertPexelsUrl(url, 'page'); } catch { assertMusicUrl(url, 'page'); }
+    return shell.openExternal(url);
+  });
   ipcMain.handle('composition:captions', async (_event, idValue: unknown, value: unknown) => {
     const id = projectIdSchema.parse(idValue);
     if (projectLocks.has(id)) throw new Error('工程正在处理，请稍后再试');

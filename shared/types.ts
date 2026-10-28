@@ -93,7 +93,7 @@ export interface VoxWeaveApi {
     | { status: 'replaced'; plan: EditPlan; preview: NonNullable<CompositionProgressEvent['preview']> }
     | { status: 'unavailable'; message: string }
   >;
-  importAssets(): Promise<ImportReport>;
+  importAssets(type?: MediaAsset['type']): Promise<ImportReport>;
   importAsset(filePath: string): Promise<MediaAsset>;
   listAssets(): Promise<MediaAsset[]>;
   searchAssets(query: string, type?: MediaAsset['type']): Promise<MediaAsset[]>;
@@ -104,6 +104,8 @@ export interface VoxWeaveApi {
   configurePexels(key: string): Promise<void>;
   searchPexels(request: { query: string; type: 'video' | 'image'; page: number; orientation?: 'portrait' | 'landscape' | 'square' }): Promise<{ items: OnlineAsset[]; query: string }>;
   downloadPexels(id: string): Promise<MediaAsset>;
+  searchMusic(request: import('./library.js').MusicSearchRequest): Promise<import('./library.js').MusicSearchResult>;
+  downloadMusic(id: string): Promise<MediaAsset>;
   openSource(url: string): Promise<void>;
   updateAudio(projectId: string, settings: { bgm: EditPlan['bgm']; audio: EditPlan['audio']; playbackRate?: number }): Promise<{ plan: EditPlan; preview: NonNullable<CompositionProgressEvent['preview']> }>;
   exportVideo(projectId: string): Promise<{ jobId: string } | null>;

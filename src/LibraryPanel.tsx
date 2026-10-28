@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { Download, FolderOpen, Search, Tags, WandSparkles, Trash2, ExternalLink, Check } from 'lucide-react';
 import type { MediaAsset, OnlineAsset } from '../shared/library';
+import { MusicPanel } from './MusicPanel';
 
 const api = () => window.voxweave!;
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 const splitTags = (value: string) => [...new Set(value.split(/[,，\n]/u).map(tag => tag.trim()).filter(Boolean))];
 
-export function LibraryPanel({ changed }: { changed: () => Promise<void> }) {
-  const [tab, setTab] = useState<'local' | 'online'>('local');
+export function LibraryPanel({ changed, initialType, useBgm }: { changed: () => Promise<void>; initialType?: MediaAsset['type']; useBgm?: (asset: MediaAsset) => void }) {
+  const [tab, setTab] = useState<'local' | 'online' | 'music'>('local');
   const [query, setQuery] = useState('');
-  const [type, setType] = useState<'' | MediaAsset['type']>('');
+  const [type, setType] = useState<'' | MediaAsset['type']>(initialType ?? '');
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
@@ -60,6 +61,7 @@ export function LibraryPanel({ changed }: { changed: () => Promise<void> }) {
     <div className="library-tabs" role="group" aria-label="素材来源">
       <button aria-pressed={tab === 'local'} onClick={() => setTab('local')}>本地素材</button>
       <button aria-pressed={tab === 'online'} onClick={() => setTab('online')}>Pexels 免费素材</button>
+      <button aria-pressed={tab === 'music'} onClick={() => setTab('music')}>免费音乐</button>
     </div>
     <div className="library-feedback" aria-live="polite">{busy || notice}</div>
     {error && <p className="library-error" role="alert">{error}</p>}
@@ -68,7 +70,7 @@ export function LibraryPanel({ changed }: { changed: () => Promise<void> }) {
         <label className="library-search"><Search size={17} aria-hidden="true"/><input aria-label="搜索本地素材" placeholder="搜索名称、标签（支持中英文）" value={query} onChange={event => { setQuery(event.target.value); setSelected([]); }}/></label>
         <select aria-label="素材类型" value={type} onChange={event => { setType(event.target.value as typeof type); setSelected([]); }}><option value="">全部类型</option><option value="video">视频</option><option value="image">图片</option><option value="audio">音频</option></select>
         <button disabled={!!busy} onClick={() => run('正在导入素材…', async () => {
-          const report = await api().importAssets(); await refresh();
+          const report = await api().importAssets(type || undefined); await refresh();
           setNotice(`已导入 ${report.assets.length} 个素材${report.errors.length ? `，${report.errors.length} 个失败` : ''}`);
           if (report.errors.length) setError(report.errors.map(item => `${item.name}：${item.message}`).join('\n'));
         })}><FolderOpen size={16} aria-hidden="true"/> 批量导入</button>
@@ -99,11 +101,15 @@ export function LibraryPanel({ changed }: { changed: () => Promise<void> }) {
         </button>
         <b title={asset.name}>{asset.name}</b><small>{asset.type} {asset.durationMs ? `${(asset.durationMs / 1000).toFixed(1)} 秒` : ''} {asset.width ? `${asset.width} × ${asset.height}` : ''}</small>
         <div className="asset-tags">{asset.tags.slice(0, 6).map(tag => <span key={tag}>{tag}</span>)}</div>
-        <small>{asset.license.source === 'pexels' ? `Pexels · ${asset.license.author}` : '用户导入'}</small>
+        <small>{asset.license.source === 'pexels' ? `Pexels · ${asset.license.author}` : asset.license.source === 'openverse' ? `Openverse · ${asset.license.author}` : '用户导入'}</small>
+        {asset.license.source === 'openverse' && <details className="music-credits"><summary>许可与署名</summary><p>{asset.license.note}</p>
+          {asset.license.licenseUrl && <button onClick={() => run('打开许可…', () => api().openSource(asset.license.licenseUrl!))}>查看许可</button>}
+        </details>}
+        {asset.type === 'audio' && useBgm && <button disabled={!!busy} onClick={() => useBgm(asset)}>用作配乐</button>}
         {asset.license.sourceUrl && <button onClick={() => run('打开来源…', () => api().openSource(asset.license.sourceUrl!))}><ExternalLink size={14} aria-hidden="true"/> 查看来源与作者</button>}
       </article>)}</div>
-      {!assets.length && <p className="library-empty">还没有匹配的素材。导入本地视频、图片或 BGM，或者切换到 Pexels 搜索。</p>}
-    </> : <>
+      {!assets.length && <p className="library-empty">{type === 'audio' ? <>还没有匹配的音频。点击「批量导入」添加本地 BGM，或<button onClick={() => setTab('music')}>搜索免费音乐</button>。</> : '还没有匹配的素材。导入本地视频、图片或 BGM，或者切换到 Pexels 搜索。'}</p>}
+    </> : tab === 'online' ? <>
       <p className="library-hint">按需搜索和下载图片、视频，授权遵循 Pexels License。<button onClick={() => run('打开 Pexels…', () => api().openSource('https://www.pexels.com/'))}>素材由 Pexels 提供 <ExternalLink size={14} aria-hidden="true"/></button></p>
       <details className="pexels-config"><summary>{configured ? 'Pexels API Key 已配置（点击修改）' : '配置 Pexels API Key'}</summary>
         <div className="pexels-key-row"><label className="key-field"><span>API Key</span><input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} placeholder="输入 API Key，保存在本机系统加密存储"/></label>
@@ -128,6 +134,6 @@ export function LibraryPanel({ changed }: { changed: () => Promise<void> }) {
         })}>{downloaded.includes(item.id) ? <Check size={16} aria-hidden="true"/> : <Download size={16} aria-hidden="true"/>}{downloaded.includes(item.id) ? '已入库' : '下载入库'}</button>
       </article>)}</div>
       {online.length > 0 && <div className="library-toolbar"><button disabled={!!busy || page <= 1} onClick={() => searchOnline(page - 1)}>上一页</button><span>第 {page} 页</span><button disabled={!!busy || online.length < 12} onClick={() => searchOnline(page + 1)}>下一页</button></div>}
-    </>}
+    </> : <MusicPanel changed={refresh} useBgm={useBgm}/>}
   </div>;
 }

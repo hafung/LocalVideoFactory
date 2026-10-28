@@ -64,3 +64,17 @@ export interface OnlineAsset {
   width: number; height: number; durationMs?: number; tags: string[];
 }
 export interface ImportReport { assets: MediaAsset[]; errors: Array<{ name: string; message: string }> }
+
+export const MusicSearchSchema = z.object({
+  query: z.string().trim().min(1).max(150),
+  page: z.number().int().min(1).max(100).default(1),
+  license: z.enum(['cc0', 'cc0-by']).default('cc0')
+}).strict();
+export type MusicSearchRequest = z.input<typeof MusicSearchSchema>;
+export interface OnlineMusic {
+  id: string; name: string; author: string; provider: string;
+  sourceUrl: string; previewUrl: string; durationMs: number;
+  license: 'cc0' | 'by'; licenseVersion: string; licenseUrl: string;
+  attribution: string; tags: string[];
+}
+export interface MusicSearchResult { items: OnlineMusic[]; query: string; page: number; pageCount: number }

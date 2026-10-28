@@ -62,7 +62,7 @@ export function App() {
   const [sourceVideoPath, setSourceVideoPath] = useState<string>();
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryView, setLibraryView] = useState<'all' | 'audio'>();
   const [exportProgress, setExportProgress] = useState<ExportProgress>();
   const [exportJob, setExportJob] = useState<string>();
   const [exportPending, setExportPending] = useState(false);
@@ -398,7 +398,7 @@ export function App() {
     <header className="topbar drag-region">
       <div className="brand no-drag"><span className="brand-mark"><AudioLines size={19}/></span><strong>声织</strong><small>VOXWEAVE</small></div>
       <div className="top-actions no-drag">
-        <button className="library-button" aria-label={`素材库，${assets.length} 个素材`} onClick={() => setLibraryOpen(true)}><Library size={16}/> <em>素材库</em> <span>{assets.length}</span></button>
+        <button className="library-button" aria-label={`素材库，${assets.length} 个素材`} onClick={() => setLibraryView('all')}><Library size={16}/> <em>素材库</em> <span>{assets.length}</span></button>
         <button className={`engine-pill ${status.state}`} onClick={() => setSettingsOpen(true)}><i/>{modelsPending ? '正在准备模型' : status.state === 'idle' ? '本地引擎就绪' : '配置引擎'}</button>
         <button className="icon-button" aria-label="打开引擎设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button>
       </div>
@@ -450,7 +450,8 @@ export function App() {
               {sourceAsset?.hasAudio === false ? <small>原视频没有音轨。</small> : <small>原声随选中的原片段剪辑；更换画面时保留这条原声音轨。</small>}
               {originalEnabled && <><label>原声音量 {Math.round(originalVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={originalVolume} disabled={working} onChange={event => setOriginalVolume(Number(event.target.value))}/></label><label><input type="checkbox" checked={originalDucking} disabled={working} onChange={event => setOriginalDucking(event.target.checked)}/> 旁白说话时降低原声音量</label></>}
             </>}
-            <label>背景音乐<select disabled={working} value={bgmAsset} onChange={event => setBgmAsset(event.target.value)}><option value="">不添加配乐</option>{assets.filter(asset => asset.type === 'audio').map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button onClick={() => setLibraryOpen(true)}>导入 BGM</button></label>
+            <label>背景音乐<select disabled={working} value={bgmAsset} onChange={event => setBgmAsset(event.target.value)}><option value="">不添加配乐</option>{assets.filter(asset => asset.type === 'audio').map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button onClick={() => setLibraryView('audio')}>导入 BGM</button></label>
+            {!assets.some(asset => asset.type === 'audio') && <small>素材库中还没有音频，导入 BGM 后即可选择配乐。</small>}
             {bgmAsset && <><label>配乐音量 {Math.round(bgmVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={bgmVolume} disabled={working} onChange={event => setBgmVolume(Number(event.target.value))}/></label><label><input type="checkbox" checked={bgmDucking} disabled={working} onChange={event => setBgmDucking(event.target.checked)}/> 旁白说话时降低配乐音量</label></>}
           </div>}
         </div>}
@@ -569,7 +570,7 @@ export function App() {
         <h3 className="candidate-section-title">Pexels 在线素材 <small>同时搜索视频和图片；只在选择后下载。<button onClick={() => void api()?.openSource('https://www.pexels.com/')}>素材由 Pexels 提供</button></small></h3>
         {onlineLoading && <p className="candidate-message" role="status">正在搜索 Pexels 视频和图片…</p>}
         {onlineQuery && <p className="candidate-message">Pexels 搜索词：{onlineQuery}</p>}
-        {onlineError && <p className="candidate-message" role="status">{onlineError} <button onClick={() => { setCandidateSceneId(undefined); setLibraryOpen(true); }}>打开素材库设置</button></p>}
+        {onlineError && <p className="candidate-message" role="status">{onlineError} <button onClick={() => { setCandidateSceneId(undefined); setLibraryView('all'); }}>打开素材库设置</button></p>}
         {!!onlineCandidates.length && <div className="candidate-online-grid">{onlineCandidates.map(item => {
           const tooShort = item.type === 'video' && (item.durationMs ?? 0) < candidateDurationMs;
           return <article key={item.id} className="candidate-online-card">
@@ -593,8 +594,9 @@ export function App() {
       </div>
     </Modal>}
 
-    {libraryOpen && <Modal title="素材库" subtitle="整理画面、图片与声音，为下一条视频积累素材" close={() => setLibraryOpen(false)} wide>
-      <LibraryPanel changed={async () => setAssets(await api()!.listAssets())}/>
+    {libraryView && <Modal title="素材库" subtitle={libraryView === 'audio' ? '导入音频后，回到背景音乐下拉框选择配乐' : '整理画面、图片与声音，为下一条视频积累素材'} close={() => setLibraryView(undefined)} wide>
+      <LibraryPanel initialType={libraryView === 'audio' ? 'audio' : undefined} changed={async () => setAssets(await api()!.listAssets())}
+        useBgm={plan && preview && !working ? asset => { setBgmAsset(asset.id); setLibraryView(undefined); } : undefined}/>
     </Modal>}
 
     {settingsOpen && <Modal title="本地引擎设置" subtitle="旁白、文案分镜和可选语义检索都在本机运行" close={() => setSettingsOpen(false)}>

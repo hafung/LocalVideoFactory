@@ -1,128 +1,144 @@
-# VoxWeave · Private, local AI voice creation
+<div align="center">
 
-<p align="center">
-  <strong>Turn scripts into expressive, production-ready speech—on your own computer.</strong><br>
-  No cloud upload. No subscription. No discrete GPU required.
-</p>
+<img src="build/icon.png" width="88" alt="LocalVideoFactory 图标">
 
-<p align="center">
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="https://github.com/hafung/VoxWeave/releases/latest">Download for Windows</a> ·
-  <a href="#command-line">CLI</a>
-</p>
+# LocalVideoFactory · 本地 AI 短视频工厂
 
-VoxWeave (声织) is a local-first voice studio for video makers, podcasters, educators, and developers. It combines a focused desktop editor with a scriptable CLI and a native C inference engine powered by Qwen3-TTS 1.7B CustomVoice on CPU.
+### 一段文案，自动成为一条片。
 
-Your drafts, reference voices, and generated audio stay on your machine. The Windows installer bundles native runtimes and automatically downloads models on first launch. Once the models are ready, creation works offline.
+**AI 分镜 · 多模态选段 · 自然配音 · 动态字幕 · 自动补画面 · 免费配乐**
 
-> **Current release:** v0.2.1 for Windows x64. macOS and Linux packages are on the roadmap; the application layer is already built on cross-platform Electron, React, TypeScript, and C.
+把零散的创作工具，串成你电脑里的一条短视频生产线。
 
-## Why creators use VoxWeave
+[简体中文](README.md) · [English](README.en.md) · [运行最新版](docs/building.md) · [历史安装包](https://github.com/hafung/LocalVideoFactory/releases) · [反馈建议](https://github.com/hafung/LocalVideoFactory/issues)
 
-- **Keep unreleased content private.** Scripts and voice samples are processed locally instead of being sent to a third-party API.
-- **Create on ordinary hardware.** CPU inference and INT8/INT4 modes make local voice production possible without a discrete GPU.
-- **Spend time editing, not configuring.** The Windows installer includes the native engine, FFmpeg, and rendering runtime; model downloads happen automatically with progress, resume, and hash verification.
-- **Narrate plain text.** The app groups nearby sentences, lets TTS adapt expression and pace to their meaning, and fills paragraph pauses without requiring markup.
-- **Fit it into a real workflow.** Export WAV, FLAC, MP3, Ogg/Opus, or M4A/AAC from the GUI or automate batches with the CLI.
-- **Stay responsive on long jobs.** Inference runs in an isolated native process, so loading a model or cancelling a task does not freeze the editor.
+[![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
+[![Source](https://img.shields.io/badge/source-v0.2.8-d9ff69?labelColor=17181d)](package.json)
+[![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
+[![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#本地-ai-创作栈)
+[![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
 
-## What it can do today
+</div>
 
-- Text-to-speech in the 10 languages supported by Qwen3-TTS, including Chinese, English, and Japanese
-- Voice cloning with 1.7B Base from reference audio; 1.7B CustomVoice reads the saved profile with narration instructions through the native engine
-- Reusable `.qvoice` voice profiles
-- Automatic narration with 1.7B CustomVoice, counting existing silence toward paragraph pauses
-- Captions and scene boundaries aligned after audio synthesis, with per-paragraph estimates excluding inserted silence when alignment is unavailable
-- BF16, INT8, and INT4 inference controls
-- Automatic normalization of common reference-audio formats to 24 kHz mono PCM
-- Shared parsing, inference settings, audio assembly, and transcoding behavior across GUI and CLI
+![创作工作台：文案、真实成片预览和分镜卡片](docs/screenshots/studio.png)
 
-## Download, install, and prepare models
+**LocalVideoFactory** 是面向电商推广、知识讲解、观点口播和自媒体创作的开源 AI 自动成片桌面应用。输入文案，可选添加原始视频，它会串起分镜规划、旁白合成、字幕对齐、素材匹配和视频合成，最后交付可以预览、修改并导出的 MP4。
 
-Download the latest Windows build from [GitHub Releases](https://github.com/hafung/VoxWeave/releases/latest).
+桌面应用名为 **声织 VoxWeave**。仓库原名 `VoxWeave`，现改为更直观的 `LocalVideoFactory`；已有工程、音色、CLI 和安装包沿用兼容标识。
 
-- **GitHub Setup EXE:** install and launch. The first launch downloads approximately 9 GB of Qwen3-TTS CustomVoice/Base, their shared speech tokenizer, SenseVoice/Silero VAD, and the semantic retrieval model from official sources. Keep internet access and sufficient free disk space during setup. The app displays progress and a retry button if downloads fail; restarting resumes partial downloads. Models stay under `%APPDATA%\voxweave\model-resources` and are reused across app upgrades.
-- **Local offline portable ZIP:** developers can still build the complete offline directory package with `pnpm package:win`. GitHub CI publishes the installer; multi-gigabyte model weights are excluded from its artifacts.
+> **版本说明：** 下文展示当前 v0.2.8 源码功能。GitHub 已发布的最新安装包仍为 v0.2.1，功能早于截图；体验本文功能请按[源码运行指南](docs/building.md)构建最新版。
 
-For a local build, extract the ZIP and launch `VoxWeave.exe`; do not run it from inside the archive.
+## 从文案到成片，一条流水线
 
-Customers do not need Node.js, an account, API key, Python, or WSL. After automatic model preparation, creation works offline. An engine/model override remains available in Settings for developers testing custom builds. Clean-machine installer and full-download acceptance still require a Windows release test.
-
-## Command line
-
-The complete Windows installation includes a CLI and does not require Node.js:
-
-```powershell
-& 'C:\Users\you\AppData\Local\Programs\voxweave\声织 VoxWeave.exe' --cli `
-  -t 'Hello from VoxWeave. Start with an ordinary script.' -o .\hello.mp3 -f mp3 -l English
-
-& 'C:\Users\you\AppData\Local\Programs\voxweave\声织 VoxWeave.exe' --cli --help
+```text
+文案 + 可选原始视频
+         ↓
+AI 理解文案，规划分镜与素材检索词
+         ↓
+本地 TTS 配音 → 根据真实声音确定时间轴 → SenseVoice 字幕对齐
+         ↓
+原片内容选段 / 本地素材匹配 / Pexels 在线补画面 / 动态文字
+         ↓
+词或短语高亮字幕 + 旁白 / 原声 / BGM 混音
+         ↓
+成片预览 → 卡片式换画面与字幕精修 → MP4 / MP3 / SRT / ASS
 ```
 
-You can also call `resources\cli\voxweave.cmd` from the installation directory. Output formats are `wav`, `flac`, `mp3`, `opus`, and `m4a`; reference audio may be WAV, FLAC, MP3, Ogg/Opus, or M4A/AAC.
+## 一个人，也能拥有一条短视频生产线
 
-## Develop from source
+| 创作环节 | 已有能力 | 帮你省下的工作 |
+| --- | --- | --- |
+| 🧠 **AI 分镜导演** | 本地 Qwen3.5-4B 理解文案，给分镜生成画面意图与检索词 | 逐句想画面、反复换搜索词 |
+| 👁️ **多模态原片选段** | 抽帧视觉理解 + 原声转写 + 语句/镜头边界，按旁白匹配原片内容 | 在长素材里拖动进度条找片段 |
+| 🎙️ **自然配音与音色克隆** | Qwen3-TTS 1.7B、本地参考音频提取音色、可复用 `.qvoice` 音色 | 反复录制旁白、调用付费云 TTS |
+| ⏱️ **声音驱动时间轴** | 用真实旁白时长编排字幕与画面；对齐不可用时显示估时回退 | 手动对齐口播、字幕和剪点 |
+| 🎞️ **自动 B-roll 补画面** | 优先视频素材，本地库 + Pexels 按需补充；图片自动使用短停留 | 下载素材、填补空白画面 |
+| ✨ **动态字幕引擎** | 按词/短语高亮、四种字幕风格、手动分组，支持 ASS 和 SRT | 逐字打轴、重做高亮字幕 |
+| 🎵 **开放音乐素材库** | Openverse 搜索、试听、下载和用作配乐；默认 CC0，可选 CC BY | 到处找 BGM、遗失授权来源 |
+| 🎚️ **三路智能混音** | 旁白、原声、BGM 独立音量；旁白出现时自动压低背景声音 | 来回调整配乐压住人声的问题 |
+| 🗂️ **卡片式精修** | 按句或合并相邻几句换画面、试听候选、选择同一视频的其他区间 | 在多轨时间线上做简单替换 |
+| 📦 **多格式交付** | H.264/AAC MP4、旁白/混合音轨 MP3、SRT/ASS，画面与字幕同步变速 | 多次转码和分别维护字幕版本 |
 
-The desktop application requires Node.js 22+ and pnpm:
+AI 分镜与多模态选段需要准备 Qwen3.5-4B 和匹配的视觉投影模型。缺少模型时会回退并显示提示；[配置方式与模型说明](docs/building.md#本地模型与运行时)。
+
+## 看得见，也改得动
+
+### 预览、分镜、换画面，在同一个工作台
+
+先看成片，再按分镜卡片微调。支持 **9:16、16:9、1:1** 画幅；更换某个画面、合并几句共用画面、调整成片倍速，都可以在工作台完成。
+
+### 字幕跟着声音走，重点跟着词语亮
+
+![字幕分组编辑界面](docs/screenshots/captions.png)
+
+从“电商强调”“观点口播”“品牌极简”“信息卡片”中选择风格。生成后可以用 `|` 合并或拆分高亮短语，**更新字幕无需重新合成旁白**。
+
+### 免费音乐，搜到就能试听和入库
+
+![已从 Openverse 入库的 CC0 音乐与许可信息](docs/screenshots/music.png)
+
+在 **更多设置 → 音轨 → 导入 BGM → 免费音乐** 中搜索音乐。默认仅显示 CC0，支持包含需署名 CC BY 曲目的筛选；作者、来源、许可和署名文本随素材保存。点击“用作配乐”，回到工作台后点“生成视频”应用。
+
+### 让人声清楚，让背景有气氛
+
+![音轨音量与配乐自动压低设置](docs/screenshots/audio.png)
+
+分别控制旁白、原声和 BGM。提供原始视频时，可在生成预览后勾选“保留原视频声音”；原声随选中的原片段剪辑，替换画面时仍可保留。只改音轨时，复用已有旁白和分镜。
+
+截图来自真实 Windows 应用与实际生成的演示工程；[截图及示例素材说明](docs/screenshots/README.md)。
+
+## 三步做出第一条短视频
+
+1. **准备应用。** 按[源码运行指南](docs/building.md)启动当前版本；准备所需模型，在素材库导入视频、图片或音频。Pexels 联网素材需要 API Key，Openverse 音乐搜索无需填写 Key。
+2. **输入文案，点“生成视频”。** 原始视频可选；没有原片时，从本地素材、在线素材和动态文字中组织画面。
+3. **预览、精修、导出。** 换画面、调字幕、选配乐，应用改动后导出 MP4；需要继续剪辑时，另存旁白、混合音轨和字幕。
+
+## 本地 AI 创作栈
+
+**推理在本机，素材按需联网。** 文案理解、原片分析、声音克隆、旁白和字幕对齐在本地运行；在线检索会向相应素材服务发送搜索词。准备好模型和本地素材后，可离线完成核心创作流程。
+
+| 组件 | 职责 |
+| --- | --- |
+| **Qwen3.5-4B + 视觉投影 / llama.cpp** | 文案分镜、原视频抽帧理解与内容匹配 |
+| **Qwen3-TTS 1.7B / 原生 C 引擎** | CPU 本地配音、参考音色提取；支持 INT8、INT4、BF16 |
+| **SenseVoice + Silero VAD** | 原声转写、语音分段与字幕对齐 |
+| **Qwen3 Embedding 0.6B** | 对素材已有名称、标签和文字描述做语义排序 |
+| **HyperFrames + FFmpeg** | 本地预览、时间轴渲染、混音与视频导出 |
+| **SQLite + Pexels + Openverse** | 本地素材索引、在线图片/视频、开放授权音乐 |
+
+桌面发行与本地运行脚本面向 **Windows x64**。支持 CPU 推理，无需独立显卡；耗时和内存需求取决于模型、文案与素材长度。模型首次准备需要下载，在线素材功能需要网络。
+
+画面来自原片、素材库、在线素材与动态图形模板。自动标签基于已有文字和规则；视觉理解用于启用多模态模型后的原片分析。
+
+## 开发与构建
 
 ```bash
+git clone https://github.com/hafung/LocalVideoFactory.git
+cd LocalVideoFactory
 pnpm install
-pnpm dev
-```
-
-Quality checks:
-
-```bash
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-On an online Windows build machine, populate the external resources once and build the directory package:
+在 Windows PowerShell 中准备运行时并启动：
 
 ```powershell
-.\scripts\download-model.ps1 -Variant custom-1.7b
-.\scripts\download-model.ps1 -Variant base-1.7b
-.\scripts\setup-sensevoice.ps1
-.\scripts\setup-ffmpeg.ps1
-pnpm verify:resources
-pnpm package:win
+.\scripts\run-local-windows.ps1
 ```
 
-`package:win` creates the complete offline `release\VoxWeave-Portable-<version>-<arch>.zip`. `package:win:installer` creates `release\VoxWeave-Setup-<version>-x64.exe` and its SHA-256 file, includes only native runtimes and a validated model download catalog, and does not require model weights on the build machine. Prepare the native engine, FFmpeg, browser, and semantic runtime first (`scripts/setup-semantic.ps1 -RuntimeOnly` skips the embedding weight). `package:win:offline-installer` retains the previous full offline NSIS option, subject to installer size limits.
+模型准备、Windows/WSL 开发、便携包、安装包和 CLI 示例见[构建与运行指南](docs/building.md)。CLI 支持脚本化配音与多格式音频输出。
 
-GitHub Actions checks the app on Linux and Windows, cross-compiles the Windows Qwen engine on Linux, and builds the model-free NSIS installer on Windows for `main`, version tags, and manual runs. The installer is available as the `VoxWeave-Windows-Setup` Actions artifact. Pushing a `v<package.json version>` tag also publishes the installer and checksum to GitHub Releases.
+[产品方案](docs/product-spec.zh-CN.md) · [开发文档](docs/development.zh-CN.md) · [SenseVoice CLI](tools/sensevoice-cli/README.md) · [依赖与许可证](LICENSES.md)
 
-For CLI development, point VoxWeave to a compatible engine, model, and FFmpeg binary:
+## 参与这条生产线
 
-```powershell
-$env:VOXWEAVE_ENGINE='C:\path\to\qwen_tts.exe'
-$env:VOXWEAVE_MODEL='D:\models\qwen3-tts-1.7b-customvoice'
-$env:VOXWEAVE_FFMPEG='C:\path\to\ffmpeg.exe'
-pnpm cli --text 'Hello from VoxWeave.' --output .\hello.wav --language English
-```
+欢迎提交使用反馈、演示作品、字幕模板、素材检索优化和性能改进。请在 Issue 中附上应用/源码版本、操作步骤和可复现的日志；涉及私人素材时，可用替代样例复现。
 
-Multi-gigabyte model weights and redistributable binaries are kept out of Git. The setup scripts place them under `resources`, and the strict packager refuses to produce an offline deliverable while a required runtime file is missing.
+如果你也想把“写完文案之后的那堆活”交给自己的电脑，欢迎 Star、试用和贡献。
 
-## Architecture and platform direction
+## 协议与致谢
 
-```text
-src/       React creation studio
-electron/  Desktop process, preload bridge, and native-engine adapter
-shared/    Markup parser, types, and WAV assembly shared by GUI and CLI
-cli/       Scriptable command-line entry point
-engine/    Pinned native C inference engine source
-scripts/   Model and engine setup helpers
-```
+应用代码采用 [MIT License](LICENSE)。模型、原生引擎、FFmpeg、字体和其他依赖遵循各自许可，详见 [LICENSES.md](LICENSES.md)。在线素材以各作品的来源和许可为准；CC BY 内容需要适当署名、附许可链接并注明修改。
 
-Electron, React, TypeScript, and the native C backend are portable foundations. The current release pipeline, bundled DLL closure, and installer are Windows-specific. Releasing on macOS and Linux still requires platform-native engine builds, resource packaging, CI, and end-to-end validation.
-
-VoxWeave is intended to grow beyond speech generation into a private creator toolkit: batch narration, timeline-aware audio, subtitle alignment, media assembly, and eventually local-first remixing and content production.
-
-## Responsible use
-
-Only clone a voice when you have the speaker's permission. Do not use VoxWeave for impersonation, fraud, harassment, or deceptive media. You are responsible for complying with applicable laws and platform disclosure rules.
-
-## License and acknowledgements
-
-VoxWeave application code is released under the [MIT License](LICENSE). The model, native engine, FFmpeg, OpenBLAS, fonts, and other dependencies retain their respective licenses; see [LICENSES.md](LICENSES.md) for details.
+声音克隆请取得说话人许可，发布内容时遵守适用法律与平台的 AI 标注要求。
