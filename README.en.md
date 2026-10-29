@@ -6,7 +6,7 @@
 
 ### Your local AI short-video factory. Script in. Video out.
 
-**AI storyboarding · Multimodal clip selection · Voice cloning · Dynamic captions · B-roll · Open music**
+**Automatic footage search · Smart source selection · Automatic editing · Voice cloning · Dynamic captions · Open music**
 
 One desktop workflow from your script to a previewable, editable MP4.
 
@@ -20,13 +20,23 @@ One desktop workflow from your script to a previewable, editable MP4.
 
 </div>
 
-![The studio: script, rendered preview, and storyboard cards](docs/screenshots/studio.png)
-
-**LocalVideoFactory** is an open-source desktop app for automated short-video production. Write a product pitch, explainer, or commentary script, optionally add a source video, and let a local pipeline organize narration, captions, footage, music, and rendering. Preview the result, adjust individual scenes, and export an MP4.
+**LocalVideoFactory** is an open-source local AI short-video factory. Enter a script to generate narration, align captions, search for footage, and automatically edit a video. Add a source video to select content-matched clips; missing footage is filled with additional media. Voice cloning, dynamic captions, free music discovery, and scene-card edits round out the workflow. Core AI runs locally on your CPU, with no dedicated GPU required.
 
 The desktop app is **声织 VoxWeave**. This repository was renamed from `VoxWeave` to `LocalVideoFactory`; existing project storage, voice profiles, CLI commands, and installer names retain their compatible identifiers.
 
 > **Version:** this page describes the current v0.2.8 source. The latest published installer is still v0.2.1 and predates these screenshots. [Build the current source](docs/building.md) to use the features shown here.
+
+## Watch a real output
+
+This 4.5-second comedy clip was made with LocalVideoFactory. Play it below with sound.
+
+https://github.com/user-attachments/assets/1e107cb7-7619-463a-9472-8045865387c5
+
+[Download the original MP4 (4.2 MB)](docs/demos/funny-demo.mp4?raw=true) · [Silent animated preview](docs/demos/funny-demo.gif)
+
+Preview the result in the studio, then adjust footage and captions with scene cards.
+
+![The studio: script, rendered preview, and storyboard cards](docs/screenshots/studio.png)
 
 ## A production line, from script to screen
 
