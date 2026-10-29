@@ -8,6 +8,20 @@ param(
   [string]$PnpmCliPath = $env:npm_execpath
 )
 $ErrorActionPreference = 'Stop'
+
+function Get-InstallerSha256([string]$File) {
+  # Nested Windows PowerShell can inherit a PowerShell 7 module path in CI.
+  # Use .NET directly so hashing does not depend on Get-FileHash discovery.
+  $stream = [IO.File]::OpenRead($File)
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
+
 if ($env:OS -ne 'Windows_NT') { throw 'Windows installer packaging requires Windows Node/pnpm.' }
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $project = if ($ProjectDir) { [IO.Path]::GetFullPath($ProjectDir) } else { $sourceRoot }
@@ -72,7 +86,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Packaged installer runtime verification failed.' }
   if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'NSIS installer output is missing.' }
   if ((Get-Item -LiteralPath $installer).Length -ge 2GB) { throw 'Installer exceeds the GitHub release asset size limit.' }
-  $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+  $hash = Get-InstallerSha256 $installer
   Set-Content -LiteralPath "$installer.sha256" -Value "$hash  $([IO.Path]::GetFileName($installer))" -Encoding ASCII
   Write-Host "Installer with first-launch model downloads: $installer" -ForegroundColor Green
 } finally {

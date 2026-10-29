@@ -13,7 +13,7 @@
 [简体中文](README.md) · [English](README.en.md) · [下载 Windows 版](https://github.com/hafung/LocalVideoFactory/releases/latest) · [源码运行](docs/building.md) · [反馈建议](https://github.com/hafung/LocalVideoFactory/issues)
 
 [![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
-[![Source](https://img.shields.io/badge/source-v0.2.8-d9ff69?labelColor=17181d)](package.json)
+[![Source](https://img.shields.io/badge/source-v0.2.9-d9ff69?labelColor=17181d)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
 [![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#本地-ai-创作栈)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
@@ -24,7 +24,7 @@
 
 桌面应用名为 **声织 VoxWeave**。仓库原名 `VoxWeave`，现改为更直观的 `LocalVideoFactory`；已有工程、音色、CLI 和安装包沿用兼容标识。
 
-> **版本说明：** 下文展示 v0.2.8 功能。[安装包与版本说明](https://github.com/hafung/LocalVideoFactory/releases/latest)以已完成发布的版本为准；也可按[源码运行指南](docs/building.md)构建。安装包首次启动需要下载模型，AI 分镜与原片理解模型需单独准备。
+> **版本说明：** 下文展示 v0.2.9 功能。[安装包与版本说明](https://github.com/hafung/LocalVideoFactory/releases/latest)以已完成发布的版本为准；也可按[源码运行指南](docs/building.md)构建。安装包首次启动需要下载模型，AI 分镜与原片理解模型需单独准备。
 
 ## 先看一条真实成片
 

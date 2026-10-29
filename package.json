@@ -1,6 +1,6 @@
 {
   "name": "voxweave",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "packageManager": "pnpm@10.33.0",
   "private": true,
   "description": "LocalVideoFactory · 本地 AI 短视频工厂 — script-to-video, multimodal editing, voice cloning, captions and open music",

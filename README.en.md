@@ -13,7 +13,7 @@ One desktop workflow from your script to a previewable, editable MP4.
 [简体中文](README.md) · [English](README.en.md) · [Download for Windows](https://github.com/hafung/LocalVideoFactory/releases/latest) · [Run from source](docs/building.md) · [Issues](https://github.com/hafung/LocalVideoFactory/issues)
 
 [![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
-[![Source](https://img.shields.io/badge/source-v0.2.8-d9ff69?labelColor=17181d)](package.json)
+[![Source](https://img.shields.io/badge/source-v0.2.9-d9ff69?labelColor=17181d)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
 [![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#a-local-ai-production-stack)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
@@ -24,7 +24,7 @@ One desktop workflow from your script to a previewable, editable MP4.
 
 The desktop app is **声织 VoxWeave**. This repository was renamed from `VoxWeave` to `LocalVideoFactory`; existing project storage, voice profiles, CLI commands, and installer names retain their compatible identifiers.
 
-> **Version:** this page describes v0.2.8. See the [latest published installer and release notes](https://github.com/hafung/LocalVideoFactory/releases/latest), or [build from source](docs/building.md). The installer downloads models on first launch; AI storyboarding and source-video understanding require separate scene-model setup.
+> **Version:** this page describes v0.2.9. See the [latest published installer and release notes](https://github.com/hafung/LocalVideoFactory/releases/latest), or [build from source](docs/building.md). The installer downloads models on first launch; AI storyboarding and source-video understanding require separate scene-model setup.
 
 ## Watch a real output
 
