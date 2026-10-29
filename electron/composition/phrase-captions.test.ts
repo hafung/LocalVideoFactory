@@ -7,8 +7,10 @@ import { readFileSync } from 'node:fs';
 import { buildPhraseCaptionCues } from './phrase-captions.js';
 
 describe('phrase captions', () => {
-  it('matches the fixtures shared with the native CLI', () => {
-    const fixtures = readFileSync(new URL('../../shared/fixtures/caption-groups.tsv', import.meta.url), 'utf8').trim().split('\n');
+  it.each([{ ending: 'LF', newline: '\n' }, { ending: 'CRLF', newline: '\r\n' }])('matches the fixtures shared with the native CLI ($ending)', ({ newline }) => {
+    const fixtureText = readFileSync(new URL('../../shared/fixtures/caption-groups.tsv', import.meta.url), 'utf8')
+      .replace(/\r?\n/gu, newline);
+    const fixtures = fixtureText.trim().split(/\r?\n/u);
     for (const line of fixtures) {
       const [text, expected] = line.split('\t');
       const words = segmentCaptionText(text).filter(part => part.lexical).map(part => ({ ...part,

@@ -102,6 +102,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: LocalVideoFactory-Windows-Setup
@@ -111,6 +112,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "LocalVideoFactory $GITHUB_REF_NAME" --notes 'Local AI short-video creation studio. The Windows installer retains the VoxWeave filename for compatibility. On first launch it downloads approximately 9 GB of speech and retrieval models with progress, resume, and SHA-256 verification. Multimodal storyboarding requires separate scene-model setup. Once models and local media are ready, the core creation workflow works offline.'
+            notes_file="docs/releases/$GITHUB_REF_NAME.md"
+            if [ -f "$notes_file" ]; then
+              notes_args=(--notes-file "$notes_file")
+            else
+              notes_args=(--notes 'Local AI short-video creation studio. The Windows installer retains the VoxWeave filename for compatibility. On first launch it downloads approximately 9 GB of speech and retrieval models with progress, resume, and SHA-256 verification. Multimodal storyboarding requires separate scene-model setup. Once models and local media are ready, the core creation workflow works offline.')
+            fi
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "LocalVideoFactory $GITHUB_REF_NAME" "${notes_args[@]}"
           fi
           gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.sha256 --repo "$GITHUB_REPOSITORY"

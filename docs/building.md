@@ -2,7 +2,7 @@
 
 [中文首页](../README.md) · [English overview](../README.en.md)
 
-当前源码版本为 `package.json` 中的 v0.2.8。GitHub 最新历史安装包为 v0.2.1，仍偏重语音创作；首页截图中的自动成片与在线音乐能力请使用当前源码构建。
+当前源码版本为 `package.json` 中的 v0.2.8。Windows 安装包和对应版本说明见 [GitHub Releases](https://github.com/hafung/LocalVideoFactory/releases/latest)；希望自行构建或体验未发布改动时，请按下文准备环境与资源。
 
 应用内名称、数据目录、CLI 命令及安装包文件名仍保留 `声织 VoxWeave` / `voxweave`，以兼容已有工程和脚本。GitHub 仓库已更名为 `hafung/LocalVideoFactory`。
 
