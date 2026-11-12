@@ -26,13 +26,13 @@ The desktop app is **声织 VoxWeave**. This repository was renamed from `VoxWea
 
 > **Version:** this page describes v0.2.9. See the [latest published installer and release notes](https://github.com/hafung/LocalVideoFactory/releases/latest), or [build from source](docs/building.md). The installer downloads models on first launch; AI storyboarding and source-video understanding require separate scene-model setup.
 
-## Watch a real output
+## Watch the brand film
 
-This 4.5-second comedy clip was made with LocalVideoFactory. Play it below with sound.
+This 31-second, 16:9 brand film introduces LocalVideoFactory. Play it below with sound.
 
-https://github.com/user-attachments/assets/1e107cb7-7619-463a-9472-8045865387c5
+https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
 
-[Download the original MP4 (4.2 MB)](docs/demos/funny-demo.mp4?raw=true) · [Silent animated preview](docs/demos/funny-demo.gif)
+[Download the full MP4 with sound (6.4 MB)](docs/demos/LocalVideoFactory_BrandFilm_16x9.mp4?raw=true)
 
 Preview the result in the studio, then adjust footage and captions with scene cards.
 

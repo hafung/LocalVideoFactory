@@ -26,13 +26,13 @@
 
 > **版本说明：** 下文展示 v0.2.9 功能。[安装包与版本说明](https://github.com/hafung/LocalVideoFactory/releases/latest)以已完成发布的版本为准；也可按[源码运行指南](docs/building.md)构建。安装包首次启动需要下载模型，AI 分镜与原片理解模型需单独准备。
 
-## 先看一条真实成片
+## 先看品牌宣传片
 
-这条 4.5 秒的搞笑短片由 LocalVideoFactory 制作，可直接播放并听到声音。
+这条 31 秒的 16:9 品牌宣传片介绍了 LocalVideoFactory，可直接播放并听到声音。
 
-https://github.com/user-attachments/assets/1e107cb7-7619-463a-9472-8045865387c5
+https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
 
-[下载原始 MP4（4.2 MB）](docs/demos/funny-demo.mp4?raw=true) · [无声动图预览](docs/demos/funny-demo.gif)
+[下载完整有声 MP4（6.4 MB）](docs/demos/LocalVideoFactory_BrandFilm_16x9.mp4?raw=true)
 
 成片生成后，可以在工作台预览，并按分镜卡片调整画面和字幕。
 
