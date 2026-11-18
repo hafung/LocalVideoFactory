@@ -16,7 +16,7 @@ it('recovers a preview after library files disappear and preserves choices for r
         { id: 'graphic', cueId: 'second', type: 'callout', text: '说明', layout: 'pip',
           position: 'top-right', sourceInMs: 0, enabled: true }
       ],
-      audio: { voiceVolume: 1, bgmAssetId: 'music', bgmVolume: .2, ducking: true }
+      audio: { voiceVolume: 1, bgmAssetId: 'music', bgmVolume: .2, ducking: true, voiceEnhancement: 'off' }
     });
     const imagePath = path.join(dir, 'image.png');
     const asset = MediaAssetSchema.parse({ id: 'image', filePath: imagePath, type: 'image', name: '图片',

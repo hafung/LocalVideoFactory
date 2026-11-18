@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { VoiceEnhancementSchema } from './voice-enhancement.js';
 
 // Deliberately separate from EditPlan: recorded speech is the source of truth.
 const ms = z.number().int().nonnegative();
@@ -60,7 +61,7 @@ export const TalkProjectSchema = z.object({
   overlays: z.array(TalkOverlaySchema).max(2000).default([]),
   audio: z.object({ voiceVolume: z.number().min(0).max(2).default(1),
     bgmAssetId: z.string().min(1).max(160).optional(), bgmVolume: z.number().min(0).max(1).default(.12),
-    ducking: z.boolean().default(true) }).strict(),
+    ducking: z.boolean().default(true), voiceEnhancement: VoiceEnhancementSchema.default('off') }).strict(),
   warnings: z.array(z.string().max(600)).max(30).default([])
 }).strict().superRefine((project, context) => {
   for (const [key, ranges] of Object.entries({ cues: project.cues, cuts: project.cuts, speech: project.speech, silence: project.silence })) {
@@ -131,6 +132,13 @@ export const TalkUpdateSchema = z.object({
   manualCut: TalkRangeSchema.optional(), overlays: z.array(TalkOverlaySchema).max(2000).optional()
 }).strict();
 export type TalkUpdate = z.infer<typeof TalkUpdateSchema>;
+export const TalkVoiceAuditionSchema = z.object({
+  revision: z.number().int().positive(),
+  preset: VoiceEnhancementSchema.exclude(['off']),
+  atMs: z.number().int().nonnegative()
+}).strict();
+export type TalkVoiceAuditionRequest = z.infer<typeof TalkVoiceAuditionSchema>;
+export interface TalkVoiceAudition { original: ArrayBuffer; enhanced: ArrayBuffer }
 export interface TalkPreview { entryUrl: string; sourceUrl: string; durationMs: number; width: number; height: number; warnings?: string[] }
 export interface TalkResult { project: TalkProject; preview: TalkPreview }
 export interface TalkProgress { jobId: string; phase: 'importing' | 'recognizing' | 'editing' | 'preparing' | 'complete' | 'cancelled' | 'error';
@@ -143,6 +151,7 @@ export interface TalkingHeadApi {
   cancel(jobId: string): Promise<void>;
   resume(): Promise<TalkResult | null>;
   update(id: string, input: TalkUpdate): Promise<TalkResult>;
+  auditionVoice(id: string, input: TalkVoiceAuditionRequest): Promise<TalkVoiceAudition>;
   export(id: string, kind: 'mp4' | 'srt' | 'ass'): Promise<{ jobId: string } | null>;
   cancelExport(jobId: string): Promise<void>;
   onProgress(listener: (event: TalkProgress) => void): () => void;

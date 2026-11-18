@@ -1,11 +1,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { VoiceEnhancement } from '../../shared/voice-enhancement.js';
+import { voiceEnhancementFilters } from './voice-enhancement.js';
 
 const run = promisify(execFile);
 
 export interface MixOptions {
   playbackRate?: number;
   narrationVolume?: number;
+  voiceEnhancement?: VoiceEnhancement;
   original?: { path: string; volume: number; ducking: boolean;
     segments?: Array<{ startMs: number; endMs: number; sourceInMs: number; sourceOutMs: number }> };
   bgm?: { path: string; volume: number; ducking: boolean };
@@ -65,7 +68,10 @@ export function mixArguments(narration: string, output: string, durationMs: numb
     tracks.push('bgm');
   }
 
-  filters.unshift(`[0:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration=${duration},loudnorm=I=-16:TP=-1.5:LRA=11,volume=${options.narrationVolume ?? 1}${sideCount ? `,asplit=${sideCount + 1}[voice]${Array.from({ length: sideCount }, (_, index) => `[side${index}]`).join('')}` : '[voice]'}`);
+  const voice = ['[0:a]aresample=48000', 'aformat=channel_layouts=stereo', 'apad', `atrim=duration=${duration}`,
+    ...voiceEnhancementFilters(options.voiceEnhancement ?? 'off'), 'loudnorm=I=-16:TP=-1.5:LRA=11',
+    `volume=${options.narrationVolume ?? 1}`].join(',');
+  filters.unshift(voice + (sideCount ? `,asplit=${sideCount + 1}[voice]${Array.from({ length: sideCount }, (_, index) => `[side${index}]`).join('')}` : '[voice]'));
   let sideIndex = 0;
   if (options.original?.ducking) filters.push(`[original][side${sideIndex++}]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=350[originalDuck]`);
   if (options.bgm?.ducking) filters.push(`[bgm][side${sideIndex++}]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=350[bgmDuck]`);

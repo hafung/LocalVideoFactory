@@ -4,11 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { access, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { TalkCreateSchema, TalkProjectSchema, TalkUpdateSchema, type TalkProject, type TalkResult,
+import { TalkCreateSchema, TalkProjectSchema, TalkUpdateSchema, TalkVoiceAuditionSchema, type TalkProject, type TalkResult,
   type TalkProgress, type TalkExportProgress } from '../../shared/talking-head.js';
 import { TalkProjectStore } from './store.js';
 import { talkCues, pauseCuts, fillerSuggestions, updateTalkProject } from './editing.js';
-import { importTalkVideo, analyzeTalkVideo, prepareTalkAudio, talkMediaStatus, type TalkMediaTools } from './media.js';
+import { importTalkVideo, analyzeTalkVideo, prepareTalkAudio, prepareTalkVoiceAudition, talkMediaStatus, type TalkMediaTools } from './media.js';
 import { compileTalkTemplate } from './compiler.js';
 import { resolveTalkAssets } from './assets.js';
 import { talkSrt, talkAss } from './captions.js';
@@ -143,6 +143,15 @@ export function registerTalkingHead(deps: Dependencies) {
       const project = updateTalkProject(await store.read(id), change);
       return await prepare(project, controller.signal, () => store.save(project));
     } finally { locks.delete(id); operations.delete(controller); }
+  });
+  ipcMain.handle('talk:audition-voice', async (_event, idValue: unknown, value: unknown) => {
+    const id = idSchema.parse(idValue), request = TalkVoiceAuditionSchema.parse(value);
+    const controller = new AbortController(); operations.add(controller);
+    try {
+      const project = await store.read(id);
+      if (request.revision !== project.revision) throw new Error('口播工程已更新，请重新试听');
+      return await prepareTalkVoiceAudition(project, store.directory(id), tools().ffmpegPath, request, controller.signal);
+    } finally { operations.delete(controller); }
   });
   ipcMain.handle('talk:export', async (event, idValue: unknown, kindValue: unknown) => {
     const id = idSchema.parse(idValue), kind = z.enum(['mp4', 'srt', 'ass']).parse(kindValue);

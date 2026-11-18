@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { TalkProjectSchema, TalkVoiceAuditionSchema, talkTimeline } from '../../shared/talking-head.js';
+import { updateTalkProject } from './editing.js';
 import { normalizeTalkTokens, talkAudioFilter } from './media.js';
 import { talkFixture } from './fixtures.test-support.js';
 
@@ -13,11 +15,26 @@ describe('recorded-speech media', () => {
   });
   it('uses one source for both sides of a cut and fades without shortening audio', () => {
     const project = talkFixture({ cuts: [{ id: 'cut', startMs: 2000, endMs: 3500, applied: true, decided: true, kind: 'manual', reason: 'test' }] });
-    const filter = talkAudioFilter(project);
+    const filter = talkAudioFilter(talkTimeline(project));
     expect(filter).toContain('[0:a]asplit=2');
     expect(filter).toContain('atrim=start=0:end=2');
     expect(filter).toContain('atrim=start=3.5:end=6');
     expect(filter).toContain('concat=n=2:v=0:a=1');
     expect(filter).not.toContain('acrossfade');
+  });
+  it('opens older projects with enhancement off and preserves cuts and captions when the preset changes', () => {
+    const current = talkFixture();
+    const { voiceEnhancement, ...oldAudio } = current.audio;
+    const project = TalkProjectSchema.parse({ ...current, audio: oldAudio });
+    expect(project.audio.voiceEnhancement).toBe('off');
+
+    const enhanced = updateTalkProject(project, { revision: project.revision, audio: { ...project.audio, voiceEnhancement: 'warm' } });
+    expect(enhanced.audio).toEqual({ ...project.audio, voiceEnhancement: 'warm' });
+    expect(talkTimeline(enhanced)).toEqual(talkTimeline(project));
+    expect(enhanced.cues).toEqual(project.cues);
+  });
+  it('rejects invalid audition presets and times', () => {
+    expect(TalkVoiceAuditionSchema.safeParse({ revision: 1, preset: 'off', atMs: 0 }).success).toBe(false);
+    expect(TalkVoiceAuditionSchema.safeParse({ revision: 1, preset: 'natural', atMs: -1 }).success).toBe(false);
   });
 });

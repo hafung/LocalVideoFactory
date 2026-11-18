@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
@@ -9,7 +9,7 @@ import { alignWithSenseVoiceProcess, type SenseVoiceProcessResult } from '../ali
 import { verifySenseVoiceResources } from '../alignment/sensevoice.js';
 import { mixNarration } from '../media/mix.js';
 import { TalkTokenSchema, TalkRangeSchema, mergeTalkRanges, talkTimeline,
-  type TalkToken, type TalkRange, type TalkProject } from '../../shared/talking-head.js';
+  type TalkToken, type TalkRange, type TalkProject, type TalkVoiceAudition, type TalkVoiceAuditionRequest } from '../../shared/talking-head.js';
 import { parseTalkSilence } from './editing.js';
 
 const run = promisify(execFile);
@@ -122,8 +122,7 @@ export async function analyzeTalkVideo(directory: string, durationMs: number, to
 }
 
 /** Fades do not overlap segments or change their lengths, so picture and voice stay aligned. */
-export function talkAudioFilter(project: TalkProject): string {
-  const spans = talkTimeline(project);
+export function talkAudioFilter(spans: readonly TalkRange[]): string {
   if (!spans.length) throw new Error('没有可导出的口播片段');
   const split = spans.length > 1 ? `[0:a]asplit=${spans.length}${spans.map((_, index) => `[a${index}]`).join('')};\n` : '';
   return split + spans.map((span, index) => {
@@ -132,21 +131,58 @@ export function talkAudioFilter(project: TalkProject): string {
   }).join(';\n') + `;\n${spans.map((_, index) => `[part${index}]`).join('')}concat=n=${spans.length}:v=0:a=1[out]`;
 }
 
+async function cutTalkAudio(ffmpeg: string, output: string, spans: readonly TalkRange[], source: string,
+  signal?: AbortSignal, seekMs = 0): Promise<void> {
+  const filterFile = `${output}.txt`;
+  try {
+    await writeFile(filterFile, talkAudioFilter(spans));
+    await run(ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+      ...(seekMs ? ['-ss', String(seekMs / 1000)] : []), '-i', source,
+      '-filter_complex_script', filterFile, '-map', '[out]', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', output],
+    { windowsHide: true, signal, maxBuffer: 4 * 1024 * 1024 });
+  } finally { await rm(filterFile, { force: true }); }
+}
+
+export async function prepareTalkVoiceAudition(project: TalkProject, directory: string, ffmpeg: string,
+  { preset, atMs }: Pick<TalkVoiceAuditionRequest, 'preset' | 'atMs'>, signal?: AbortSignal): Promise<TalkVoiceAudition> {
+  const timeline = talkTimeline(project);
+  const durationMs = timeline.at(-1)!.outputEndMs;
+  const lengthMs = Math.min(durationMs, 8000);
+  const startMs = Math.min(atMs, durationMs - lengthMs), endMs = startMs + lengthMs;
+  const spans = timeline.flatMap(span => {
+    const start = Math.max(startMs, span.outputStartMs), end = Math.min(endMs, span.outputEndMs);
+    return end > start ? [{ startMs: span.startMs + start - span.outputStartMs, endMs: span.startMs + end - span.outputStartMs }] : [];
+  });
+  const seekMs = spans[0].startMs;
+  const media = path.join(directory, 'media'), workspace = await mkdtemp(path.join(media, 'audition-'));
+  try {
+    const cut = path.join(workspace, 'cut.wav');
+    await cutTalkAudio(ffmpeg, cut, spans.map(span => ({ startMs: span.startMs - seekMs, endMs: span.endMs - seekMs })),
+      path.join(media, 'source.mp4'), signal, seekMs);
+    const original = path.join(workspace, 'original.wav'), enhanced = path.join(workspace, 'enhanced.wav');
+    await mixNarration(ffmpeg, cut, original, lengthMs, {}, signal);
+    await mixNarration(ffmpeg, cut, enhanced, lengthMs, { voiceEnhancement: preset }, signal);
+    return {
+      original: new Uint8Array(await readFile(original)).buffer,
+      enhanced: new Uint8Array(await readFile(enhanced)).buffer
+    };
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+}
+
 export async function prepareTalkAudio(project: TalkProject, directory: string, tools: TalkMediaTools,
   resolveAsset: (id: string) => string, signal?: AbortSignal): Promise<string> {
   const spans = talkTimeline(project);
-  const key = createHash('sha256').update(JSON.stringify(['talk-audio-v2', spans, project.audio])).digest('hex').slice(0, 24);
+  const { voiceEnhancement, ...levels } = project.audio;
+  const inputs = voiceEnhancement === 'off' ? ['talk-audio-v2', spans, levels] : ['talk-audio-v3', spans, project.audio];
+  const key = createHash('sha256').update(JSON.stringify(inputs)).digest('hex').slice(0, 24);
   const media = path.join(directory, 'media'), output = path.join(media, `mix-${key}.wav`);
   try { await access(output); return output; } catch { /* First render of this edit. */ }
-  const filterFile = path.join(media, `cut-${key}.txt`), raw = path.join(media, `cut-${key}.wav`), temporary = path.join(media, `mix-${key}.tmp.wav`);
+  const raw = path.join(media, `cut-${key}.wav`), temporary = path.join(media, `mix-${key}.tmp.wav`);
   const padded = path.join(media, `mix-${key}.padded.wav`);
   try {
-    await writeFile(filterFile, talkAudioFilter(project));
-    await run(tools.ffmpegPath, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', path.join(media, 'source.mp4'),
-      '-filter_complex_script', filterFile, '-map', '[out]', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', raw],
-    { windowsHide: true, signal, maxBuffer: 4 * 1024 * 1024 });
+    await cutTalkAudio(tools.ffmpegPath, raw, spans, path.join(media, 'source.mp4'), signal);
     await mixNarration(tools.ffmpegPath, raw, temporary, spans.at(-1)!.outputEndMs, {
-      narrationVolume: project.audio.voiceVolume,
+      narrationVolume: project.audio.voiceVolume, voiceEnhancement,
       bgm: project.audio.bgmAssetId ? { path: resolveAsset(project.audio.bgmAssetId), volume: project.audio.bgmVolume,
         ducking: project.audio.ducking } : undefined
     }, signal);
@@ -157,5 +193,5 @@ export async function prepareTalkAudio(project: TalkProject, directory: string, 
     { windowsHide: true, signal, maxBuffer: 1024 * 1024 });
     signal?.throwIfAborted();
     await rename(padded, output); return output;
-  } finally { await Promise.all([raw, filterFile, temporary, padded].map(file => rm(file, { force: true }))); }
+  } finally { await Promise.all([raw, temporary, padded].map(file => rm(file, { force: true }))); }
 }

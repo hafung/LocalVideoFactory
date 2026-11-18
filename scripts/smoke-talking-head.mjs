@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import path from 'node:path';
 import puppeteer from 'puppeteer';
 import { TalkProjectSchema, talkDuration } from '../dist-electron/shared/talking-head.js';
-import { importTalkVideo, analyzeTalkVideo, prepareTalkAudio } from '../dist-electron/electron/talking-head/media.js';
+import { importTalkVideo, analyzeTalkVideo, prepareTalkAudio, prepareTalkVoiceAudition } from '../dist-electron/electron/talking-head/media.js';
 import { talkCues, pauseCuts, fillerSuggestions, updateTalkProject } from '../dist-electron/electron/talking-head/editing.js';
 import { talkOutputCaptions, talkSrt, talkAss } from '../dist-electron/electron/talking-head/captions.js';
 import { compileTalkTemplate } from '../dist-electron/electron/talking-head/compiler.js';
@@ -54,9 +54,24 @@ const audio = await prepareTalkAudio(project, directory, tools, () => { throw ne
 const probe = new FfprobeMediaProbe(tools.ffprobePath);
 const audioInfo = await probe.probe(audio);
 assert.ok(Math.abs(audioInfo.durationMs - talkDuration(project)) <= 1);
+const enhancedProject = updateTalkProject(project, {
+  revision: project.revision, audio: { ...project.audio, voiceEnhancement: 'warm' }
+});
+const enhancedAudio = await prepareTalkAudio(enhancedProject, directory, tools, () => { throw new Error('No BGM'); });
+assert.notEqual(enhancedAudio, audio);
+assert.notDeepEqual(await readFile(enhancedAudio), await readFile(audio));
+assert.equal((await probe.probe(enhancedAudio)).durationMs, audioInfo.durationMs);
+assert.equal(talkSrt(enhancedProject), talkSrt(project));
+assert.equal(talkAss(enhancedProject), talkAss(project));
+for (const preset of ['natural', 'clear', 'warm']) {
+  const samples = await prepareTalkVoiceAudition(project, directory, tools.ffmpegPath, { preset, atMs: 0 });
+  assert.equal(samples.original.byteLength, samples.enhanced.byteLength);
+  assert.notDeepEqual(new Uint8Array(samples.original), new Uint8Array(samples.enhanced));
+}
+assert.equal(await prepareTalkAudio(project, directory, tools, () => { throw new Error('No BGM'); }), audio);
 const resolveAsset = () => { throw new Error('No library assets'); };
 const workspace = path.join(root, 'preview');
-const prepared = await compileTalkTemplate(project, directory, workspace, audio, resolveAsset);
+const prepared = await compileTalkTemplate(enhancedProject, directory, workspace, enhancedAudio, resolveAsset);
 const server = createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
@@ -109,5 +124,5 @@ try {
   await writeFile(path.join(root, 'project.json'), JSON.stringify(project, null, 2));
   await writeFile(path.join(root, 'report.json'), JSON.stringify({ ok: true, sourceMs: source.durationMs, outputMs: prepared.durationMs,
     recognizedTokens: analysis.tokens.length, cuts: project.cuts, initial, later, audioInfo }, null, 2));
-  process.stdout.write(`Talking-head smoke passed: ${source.durationMs} -> ${prepared.durationMs} ms, ${analysis.tokens.length} ASR tokens.\n`);
+  process.stdout.write(`Talking-head smoke passed: ${source.durationMs} -> ${prepared.durationMs} ms, ${analysis.tokens.length} ASR tokens, voice presets and export.\n`);
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

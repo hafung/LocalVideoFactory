@@ -4,13 +4,14 @@ import path from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import puppeteer from 'puppeteer';
 import { updateTalkProject } from '../dist-electron/electron/talking-head/editing.js';
-import { prepareTalkAudio } from '../dist-electron/electron/talking-head/media.js';
+import { prepareTalkAudio, prepareTalkVoiceAudition } from '../dist-electron/electron/talking-head/media.js';
 import { compileTalkTemplate } from '../dist-electron/electron/talking-head/compiler.js';
+import { TalkProjectSchema } from '../dist-electron/shared/talking-head.js';
 
 const base = process.env.VOXWEAVE_UI_URL || 'http://127.0.0.1:5178';
 const root = path.resolve('.windows-smoke/talking-head');
 const directory = path.join(root, 'project');
-let project = JSON.parse(await readFile(path.join(root, 'project.json'), 'utf8'));
+let project = TalkProjectSchema.parse(JSON.parse(await readFile(path.join(root, 'project.json'), 'utf8')));
 const tools = { ffmpegPath: process.env.VOXWEAVE_FFMPEG, ffprobePath: process.env.VOXWEAVE_FFPROBE,
   senseVoiceRoot: path.resolve('resources/models/sensevoice-small') };
 const calls = [];
@@ -33,6 +34,12 @@ try {
     assert.equal(id, project.id); calls.push(change);
     project = updateTalkProject(project, change); return prepare();
   });
+  await page.exposeFunction('__talkAudition', async (id, request) => {
+    assert.equal(id, project.id);
+    assert.equal(request.revision, project.revision);
+    const samples = await prepareTalkVoiceAudition(project, directory, tools.ffmpegPath, request);
+    return { original: Buffer.from(samples.original).toString('base64'), enhanced: Buffer.from(samples.enhanced).toString('base64') };
+  });
   await page.evaluateOnNewDocument(initial => {
     window.__ttsCalls = 0;
     const forbidden = async () => { window.__ttsCalls++; throw new Error('TTS must not be invoked'); };
@@ -46,7 +53,11 @@ try {
         status: async () => ({ ready: true, message: '识别资源就绪' }),
         resume: async () => initial,
         onProgress: () => () => {}, onExportProgress: () => () => {},
-        update: (id, change) => window.__talkUpdate(id, change)
+        update: (id, change) => window.__talkUpdate(id, change),
+        auditionVoice: async (id, request) => {
+          const samples = await window.__talkAudition(id, request);
+          return { original: Uint8Array.fromBase64(samples.original).buffer, enhanced: Uint8Array.fromBase64(samples.enhanced).buffer };
+        }
       }
     };
   }, initial);
@@ -63,6 +74,30 @@ try {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(element, '声织|口播精剪。');
     element.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  async function clickButton(label) {
+    const button = await page.waitForSelector(`::-p-aria([name="${label}"][role="button"])`, { visible: true });
+    await button.click();
+  }
+  const enhancement = 'select[aria-label="人声增强"]';
+  await page.click('.talk-audio > summary');
+  await page.select(enhancement, 'warm');
+  await clickButton('试听对比');
+  await clickButton('试听原声');
+  await page.waitForFunction(() => document.querySelector('.talk-audio audio').currentTime > .05);
+  await clickButton('试听增强');
+  await page.waitForFunction(() => document.querySelector('.talk-audio button[aria-pressed=true]')?.textContent === '试听增强'
+    && document.querySelector('.talk-audio audio').currentTime > .05);
+  assert.equal(project.audio.voiceEnhancement, 'off');
+  await clickButton('应用增强');
+  await page.waitForFunction(() => !document.querySelector('select[aria-label="人声增强"]').disabled);
+  assert.equal(project.audio.voiceEnhancement, 'warm');
+  assert.equal(calls.at(-1).edits, undefined);
+  assert.equal(await page.$eval('.talk-cue textarea', element => element.value), '声织|口播精剪。');
+  await page.select(enhancement, 'off');
+  await clickButton('关闭增强');
+  await page.waitForFunction(() => !document.querySelector('select[aria-label="人声增强"]').disabled);
+  assert.equal(project.audio.voiceEnhancement, 'off');
+  await page.click('.talk-audio > summary');
   await page.click('.talk-editor-toolbar button');
   await page.waitForFunction(() => document.querySelector('.talk-notice')?.textContent.includes('已保存') && !document.querySelector('.talk-cue textarea').disabled);
   assert.equal(project.cues[0].text, '声织|口播精剪。');
@@ -111,5 +146,5 @@ try {
   await page.setViewport({ width: 800, height: 1000 });
   await page.screenshot({ path: path.join(root, 'ui-narrow.png') });
   await writeFile(path.join(root, 'ui-report.json'), JSON.stringify({ ok: true, calls, ttsCalls: 0, errors }, null, 2));
-  process.stdout.write('Talking-head UI smoke passed: correction, reveal, restore, source audition, graphic, mode isolation, no TTS.\n');
+  process.stdout.write('Talking-head UI smoke passed: voice audition and presets, correction, reveal, restore, source audition, graphic, mode isolation, no TTS.\n');
 } finally { await browser.close(); }

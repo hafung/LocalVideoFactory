@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { HyperframesPlayer } from '@hyperframes/player';
 import { AudioLines, Film, FolderOpen, Library, Play, Plus, RefreshCw, Scissors, Square, Upload, X } from 'lucide-react';
 import { LibraryPanel } from './LibraryPanel';
+import { TalkVoiceEnhancement } from './TalkVoiceEnhancement';
 import { sourceToTalkTime, talkDuration, type TalkProject, type TalkResult, type TalkProgress,
   type TalkUpdate, type TalkExportProgress, type TalkOverlay, type TalkCaptionSettings } from '../shared/talking-head';
 import type { MediaAsset } from '../shared/library';
@@ -48,8 +49,9 @@ export function TalkingHead({ active }: { active: boolean }) {
   const resumeRequest = useRef<Promise<TalkResult | null> | undefined>(undefined);
   const pending = busy || !!job || !!exportJob;
 
-  function accept(next: TalkResult) {
-    setResult(next); setStrength(next.project.strength); setDrafts({});
+  function accept(next: TalkResult, clearDrafts = true) {
+    setResult(next); setStrength(next.project.strength);
+    if (clearDrafts) setDrafts({});
     setSelectedCue(previous => next.project.cues.some(cue => cue.id === previous) ? previous : next.project.cues[0]?.id ?? '');
   }
   async function refreshAssets() { const items = await desktop()?.listAssets(); if (items) setAssets(items); }
@@ -140,13 +142,13 @@ export function TalkingHead({ active }: { active: boolean }) {
       }
     } catch (error) { setError(messageOf(error)); setBusy(false); }
   }
-  async function update(change: Omit<TalkUpdate, 'revision'>) {
+  async function update(change: Omit<TalkUpdate, 'revision'>, saveDrafts = true) {
     if (!project || !api() || pending) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const edits = Object.entries(drafts).map(([cueId, text]) => ({ cueId, text }));
+      const edits = saveDrafts ? Object.entries(drafts).map(([cueId, text]) => ({ cueId, text })) : [];
       const next = await api()!.update(project.id, { revision: project.revision, ...(edits.length ? { edits } : {}), ...change });
-      accept(next); setNotice('改动已保存，预览已更新。');
+      accept(next, saveDrafts); setNotice('改动已保存，预览已更新。');
     } catch (error) { setError(messageOf(error)); }
     finally { setBusy(false); }
   }
@@ -218,6 +220,9 @@ export function TalkingHead({ active }: { active: boolean }) {
             onChange={event => void update({ captions: { ...project.captions, position: event.target.value as 'top' | 'bottom' } })}><option value="bottom">下方</option><option value="top">上方</option></select></label>
           <label className="talk-check"><input type="checkbox" checked={project.captions.enabled} disabled={pending} onChange={event => void update({ captions: { ...project.captions, enabled: event.target.checked } })}/> 显示视频字幕</label>
           <details className="talk-audio"><summary>原声与配乐</summary>
+            <TalkVoiceEnhancement key={project.id} project={project} disabled={pending} playerRef={playerRef}
+              canAudition={active && !sourcePreview && !libraryOpen}
+              apply={voiceEnhancement => void update({ audio: { ...project.audio, voiceEnhancement } }, false)}/>
             <label className="talk-field">原声音量 {Math.round(project.audio.voiceVolume * 100)}%<input aria-label="口播原声音量" type="range" min="0" max="2" step="0.05" disabled={pending}
               defaultValue={project.audio.voiceVolume} key={`${project.id}-${project.revision}-volume`} onPointerUp={event => { const value = Number(event.currentTarget.value); if (value !== project.audio.voiceVolume) void update({ audio: { ...project.audio, voiceVolume: value } }); }}
               onKeyUp={event => { if (event.key.startsWith('Arrow')) void update({ audio: { ...project.audio, voiceVolume: Number(event.currentTarget.value) } }); }}/></label>
@@ -246,7 +251,7 @@ export function TalkingHead({ active }: { active: boolean }) {
           <p className="talk-metadata">{project.source.name} · {seconds(result.preview.durationMs)} · {project.source.width} × {project.source.height}</p>
           <div className="talk-actions"><button className="talk-primary" disabled={pending || dirty} onClick={() => void exportFile('mp4')}><Film size={15}/> 导出 MP4</button>
             <button disabled={pending || dirty} onClick={() => void exportFile('srt')}>SRT</button><button disabled={pending || dirty} onClick={() => void exportFile('ass')}>动态 ASS</button></div>
-          {dirty && <p className="talk-hint">保存字幕后即可导出。其他改动也会一并保存当前字幕。</p>}
+          {dirty && <p className="talk-hint">保存字幕后即可导出。</p>}
         </>}
         {exportProgress && <div className="talk-progress" role="status"><span>{exportProgress.message}</span>
           {!['complete', 'error', 'cancelled'].includes(exportProgress.phase) && <progress max="1" value={exportProgress.progress}/>}

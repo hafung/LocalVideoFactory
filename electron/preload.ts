@@ -8,6 +8,7 @@ const api: VoxWeaveApi = {
     cancel: id => ipcRenderer.invoke('talk:cancel', id),
     resume: () => ipcRenderer.invoke('talk:resume'),
     update: (id, input) => ipcRenderer.invoke('talk:update', id, input),
+    auditionVoice: (id, input) => ipcRenderer.invoke('talk:audition-voice', id, input),
     export: (id, kind) => ipcRenderer.invoke('talk:export', id, kind),
     cancelExport: id => ipcRenderer.invoke('talk:cancel-export', id),
     onProgress: listener => {
