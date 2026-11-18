@@ -70,6 +70,7 @@ export interface GenerateCompositionRequest extends DraftPlanRequest {
 }
 
 export interface VoxWeaveApi {
+  talkingHead: import('./talking-head.js').TalkingHeadApi;
   modelSetupStatus(): Promise<import('./model-downloads.js').ModelSetupStatus>;
   retryModelSetup(): Promise<void>;
   onModelSetupProgress(listener: (status: import('./model-downloads.js').ModelSetupStatus) => void): () => void;

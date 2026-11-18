@@ -35,6 +35,8 @@
     "smoke:narration-consistency": "node scripts/smoke-narration-consistency.mjs",
     "smoke:clone": "node scripts/smoke-clone.mjs",
     "smoke:sensevoice": "node scripts/smoke-sensevoice.mjs",
+    "smoke:talk": "node scripts/smoke-talking-head.mjs --render",
+    "smoke:talk:ui": "node scripts/smoke-talking-head-ui.mjs",
     "smoke:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1",
     "smoke:composition:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-composition-windows.ps1",
     "smoke:export:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-export-windows.ps1",

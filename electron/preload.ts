@@ -2,6 +2,25 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { CompositionProgressEvent, ProgressEvent, SynthesisRequest, VoxWeaveApi } from '../shared/types.js';
 
 const api: VoxWeaveApi = {
+  talkingHead: {
+    status: () => ipcRenderer.invoke('talk:status'),
+    create: input => ipcRenderer.invoke('talk:create', input),
+    cancel: id => ipcRenderer.invoke('talk:cancel', id),
+    resume: () => ipcRenderer.invoke('talk:resume'),
+    update: (id, input) => ipcRenderer.invoke('talk:update', id, input),
+    export: (id, kind) => ipcRenderer.invoke('talk:export', id, kind),
+    cancelExport: id => ipcRenderer.invoke('talk:cancel-export', id),
+    onProgress: listener => {
+      const handler = (_event: Electron.IpcRendererEvent, value: import('../shared/talking-head.js').TalkProgress) => listener(value);
+      ipcRenderer.on('talk:progress', handler);
+      return () => ipcRenderer.removeListener('talk:progress', handler);
+    },
+    onExportProgress: listener => {
+      const handler = (_event: Electron.IpcRendererEvent, value: import('../shared/talking-head.js').TalkExportProgress) => listener(value);
+      ipcRenderer.on('talk:export-progress', handler);
+      return () => ipcRenderer.removeListener('talk:export-progress', handler);
+    }
+  },
   modelSetupStatus: () => ipcRenderer.invoke('models:status'),
   retryModelSetup: () => ipcRenderer.invoke('models:retry'),
   onModelSetupProgress: listener => {

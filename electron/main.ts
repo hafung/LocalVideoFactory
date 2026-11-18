@@ -41,6 +41,8 @@ import { analyzeSource } from './composition/source-edits.js';
 import { resolveSceneModelPaths } from './composition/scene-model.js';
 import { analyzeSourceContent, matchSourceContent, SOURCE_CONTENT_VERSION, type SourceContentPlan } from './composition/source-content.js';
 import { alignWithSenseVoiceProcess } from './alignment/sensevoice-process.js';
+import { registerTalkingHead } from './talking-head/ipc.js';
+import { streamTalkSource } from './talking-head/source-stream.js';
 import { LANGUAGES, type AudioFormat, type CompositionProgressEvent, type GenerateCompositionRequest, type SynthesisRequest, type VoiceProfile } from '../shared/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -450,9 +452,27 @@ if (cliMode) {
     return net.fetch(pathToFileURL(file).href, { headers: request.headers });
   });
 
-  protocol.handle('voxweave-preview', request => {
-    try { return net.fetch(previews.resolve(request.url).href); }
+  protocol.handle('voxweave-preview', async request => {
+    try {
+      const file = previews.resolve(request.url);
+      // Source audition seeks inside the full recording, including frames beyond Chromium's buffer.
+      const pathname = new URL(request.url).pathname;
+      if (pathname.startsWith('/talk-') && pathname.endsWith('/assets/source.mp4'))
+        return await streamTalkSource(file, request);
+      return net.fetch(file.href);
+    }
     catch (error) { return new Response(error instanceof Error ? error.message : String(error), { status: 404 }); }
+  });
+
+  registerTalkingHead({
+    userData: app.getPath('userData'), previews, library,
+    mediaTools: () => {
+      const paths = configuredPaths();
+      return paths.ffmpegPath && paths.ffprobePath ? { ffmpegPath: paths.ffmpegPath, ffprobePath: paths.ffprobePath,
+        senseVoiceRoot: path.join(modelRoot(), 'models', 'sensevoice-small') } : undefined;
+    },
+    rendererTools,
+    allowOutput: file => allowedShellPaths.add(path.resolve(file))
   });
 
   ipcMain.handle('models:status', () => modelDownloader?.status ?? bundledModelStatus);
