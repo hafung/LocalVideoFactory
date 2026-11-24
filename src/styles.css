@@ -3,4 +3,6 @@
 .model-setup p { margin: 8px 0; font-size: 13px; overflow-wrap: anywhere; }
 .model-setup small { color: var(--muted); }
 .model-setup progress { width: min(100%, 360px); accent-color: var(--accent); }
+.model-setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.model-setup-actions button { white-space: nowrap; }
 @media (max-width: 640px) { .model-setup { margin: 12px; flex-direction: column; align-items: stretch; } }

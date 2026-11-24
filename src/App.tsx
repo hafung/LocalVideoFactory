@@ -78,6 +78,8 @@ export function App() {
   const [originalDucking, setOriginalDucking] = useState(true);
   const [status, setStatus] = useState<EngineStatus>({ state: 'missing', backend: 'none', message: '正在检测本地引擎…' });
   const [modelSetup, setModelSetup] = useState<ModelSetupStatus>();
+  const [modelImportPending, setModelImportPending] = useState(false);
+  const [modelImportError, setModelImportError] = useState('');
   const [enginePath, setEnginePath] = useState('');
   const [modelDir, setModelDir] = useState('');
   const [semanticEnginePath, setSemanticEnginePath] = useState('');
@@ -190,6 +192,7 @@ export function App() {
   const estimatedSeconds = useMemo(() => estimateDuration(script), [script]);
   const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending || captionBusy;
   const modelsPending = !!modelSetup && !['ready', 'bundled'].includes(modelSetup.state);
+  const modelSetupLabel = modelSetup?.state === 'error' ? '模型准备失败' : '正在准备模型';
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
@@ -376,6 +379,14 @@ export function App() {
     if (next) { setStatus(next); if (next.state === 'idle') setSettingsOpen(false); }
   }
 
+  async function importLocalModels() {
+    setModelImportPending(true);
+    setModelImportError('');
+    try { await api()?.importLocalModels(); }
+    catch (error) { setModelImportError(error instanceof Error ? error.message : String(error)); }
+    finally { setModelImportPending(false); }
+  }
+
   async function configureSemantic(enginePath = semanticEnginePath, modelPath = semanticModelPath) {
     setSemanticNotice('');
     try {
@@ -399,20 +410,27 @@ export function App() {
       <div className="brand no-drag"><span className="brand-mark"><AudioLines size={19}/></span><strong>声织</strong><small>VOXWEAVE</small></div>
       <div className="top-actions no-drag">
         <button className="library-button" aria-label={`素材库，${assets.length} 个素材`} onClick={() => setLibraryView('all')}><Library size={16}/> <em>素材库</em> <span>{assets.length}</span></button>
-        <button className={`engine-pill ${status.state}`} onClick={() => setSettingsOpen(true)}><i/>{modelsPending ? '正在准备模型' : status.state === 'idle' ? '本地引擎就绪' : '配置引擎'}</button>
+        <button className={`engine-pill ${modelsPending && modelSetup.state === 'error' ? 'missing' : status.state}`} onClick={() => setSettingsOpen(true)}><i/>{modelsPending ? modelSetupLabel : status.state === 'idle' ? '本地引擎就绪' : '配置引擎'}</button>
         <button className="icon-button" aria-label="打开引擎设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button>
       </div>
     </header>
 
     {modelsPending && <section className="model-setup" aria-label="准备创作模型">
-      <div role="status"><strong>首次使用需要下载创作模型</strong><p>{modelSetup.message}</p>
-        <small>约 9 GB，下载完成后可离线使用。关闭应用后，下次启动会继续下载。</small>
+      <div role="status"><strong>{modelSetup.state === 'error' ? modelSetupLabel : '首次使用需要准备创作模型'}</strong><p>{modelSetup.message}</p>
+        <small>已有模型可从本地导入。在线准备约 9 GB，支持断点续传。</small>
         <p>已准备 {modelSetup.completedFiles} / {modelSetup.totalFiles} 个文件
           {modelSetup.state === 'downloading' && <> · {(modelSetup.downloadedBytes / 1024 ** 2).toFixed(1)} MiB
             {modelSetup.totalBytes ? ` / ${(modelSetup.totalBytes / 1024 ** 2).toFixed(1)} MiB` : ''}</>}</p>
         <progress aria-label="模型准备进度" value={modelSetup.completedFiles} max={modelSetup.totalFiles || 1}/>
+        {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
       </div>
-      {modelSetup.state === 'error' && <button className="secondary-button" onClick={() => void api()?.retryModelSetup()}><RefreshCw size={15}/> 重试下载</button>}
+      <div className="model-setup-actions">
+        <button className="secondary-button" disabled={modelImportPending} onClick={() => void importLocalModels()}><FolderOpen size={15}/> 导入本地模型</button>
+        {modelSetup.state === 'error' && <button className="secondary-button" disabled={modelImportPending} onClick={() => {
+          setModelImportError('');
+          void api()?.retryModelSetup();
+        }}><RefreshCw size={15}/> 重试下载</button>}
+      </div>
     </section>}
 
     <main className={`creator-layout ${plan ? 'has-storyboard' : ''}`}>
@@ -458,7 +476,7 @@ export function App() {
 
         <div className="primary-row">
           {jobId && <button className="cancel-button" onClick={() => api()?.cancelComposition(jobId)}><Square size={14} fill="currentColor"/> 取消生成</button>}
-          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || modelsPending || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{modelsPending ? '正在准备模型…' : jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
+          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || modelsPending || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{modelsPending ? modelSetupLabel : jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
         </div>
       </section>
 

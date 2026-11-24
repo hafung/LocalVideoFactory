@@ -24,6 +24,7 @@ const api: VoxWeaveApi = {
   },
   modelSetupStatus: () => ipcRenderer.invoke('models:status'),
   retryModelSetup: () => ipcRenderer.invoke('models:retry'),
+  importLocalModels: () => ipcRenderer.invoke('models:import'),
   onModelSetupProgress: listener => {
     const handler = (_event: Electron.IpcRendererEvent, status: import('../shared/model-downloads.js').ModelSetupStatus) => listener(status);
     ipcRenderer.on('models:progress', handler);

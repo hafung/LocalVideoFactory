@@ -28,7 +28,7 @@ import { selectBroll, splitUnfilledScenes, fillShortLocalVideos } from './librar
 import { fillOnlineMedia, type AutomaticMediaProvider } from './library/automatic-media.js';
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
-import { ModelDownloader } from './model-downloads.js';
+import { ModelDownloader, type LocalModelSources } from './model-downloads.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
 import { CaptionHighlightSchema } from '../shared/edit-plan.js';
 import { updateCaptionHighlight } from './composition/caption-editing.js';
@@ -55,6 +55,7 @@ if ((process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT || process.env.VOXWEAVE_SMOKE
 interface Settings extends EngineConfig {
   lastProjectId?: string; pexelsKeyEncrypted?: string; voiceProfiles?: VoiceProfile[];
   semanticEnginePath?: string; semanticModelPath?: string; semanticEnabled?: boolean;
+  modelResourcesDir?: string;
   sceneModelPath?: string; sceneModelEnabled?: boolean;
   recentVisualAssetIds?: string[];
   ttsSetupVersion?: string;
@@ -78,7 +79,7 @@ function initializeModelDownloader(): void {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('models:progress', status);
     }
-  });
+  }, (input, options) => net.fetch(input instanceof URL ? input.href : input, options), localModelSources);
   app.on('before-quit', () => modelDownloader?.cancel());
 }
 
@@ -116,6 +117,24 @@ function resourceRoot(): string {
   return process.env.VOXWEAVE_RESOURCE_ROOT
     ? path.resolve(process.env.VOXWEAVE_RESOURCE_ROOT)
     : app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '..', '..', 'resources');
+}
+
+function localModelSources(): LocalModelSources {
+  const narrationModelDir = process.env.VOXWEAVE_MODEL ?? settings.get('modelDir');
+  const embeddingModelPath = settings.get('semanticModelPath');
+  const roots = [settings.get('modelResourcesDir'), resourceRoot()].filter((root): root is string => Boolean(root));
+  if (narrationModelDir) {
+    const models = path.dirname(narrationModelDir);
+    if (path.basename(models).toLowerCase() === 'models') roots.push(path.dirname(models));
+  }
+  if (embeddingModelPath) {
+    const model = path.dirname(embeddingModelPath);
+    const semantic = path.dirname(model);
+    if (path.basename(model).toLowerCase() === 'model' && path.basename(semantic).toLowerCase() === 'semantic') {
+      roots.push(path.dirname(semantic));
+    }
+  }
+  return { roots, narrationModelDir, embeddingModelPath };
 }
 
 function configuredPaths() {
@@ -477,6 +496,26 @@ if (cliMode) {
 
   ipcMain.handle('models:status', () => modelDownloader?.status ?? bundledModelStatus);
   ipcMain.handle('models:retry', () => { if (modelDownloader) void modelDownloader.start(); });
+  ipcMain.handle('models:import', async event => {
+    const downloader = modelDownloader;
+    if (!downloader) return;
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const options = { properties: ['openDirectory' as const], title: '选择包含模型的 resources 文件夹',
+      defaultPath: settings.get('modelResourcesDir') ?? resourceRoot() };
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    const selected = result.filePaths[0];
+    if (result.canceled || !selected) return;
+    const root = path.basename(selected).toLowerCase() === 'models' ? path.dirname(selected) : selected;
+    const candidates = [root, path.join(root, 'resources')];
+    const directories = await Promise.all(candidates.map(async candidate => {
+      const entries = await Promise.all(['models', 'semantic'].map(name => stat(path.join(candidate, name)).catch(() => undefined)));
+      return entries.some(entry => entry?.isDirectory());
+    }));
+    const source = candidates[directories.indexOf(true)];
+    if (!source) throw new Error('请选择包含 models 或 semantic 子目录的资源文件夹。');
+    settings.set('modelResourcesDir', source);
+    if (downloader.status.state !== 'ready') void downloader.restart();
+  });
   ipcMain.handle('engine:status', () => modelDownloader && modelDownloader.status.state !== 'ready'
     ? { state: 'missing', backend: 'native', message: modelDownloader.status.message }
     : configuredEngine().status());
@@ -494,8 +533,11 @@ if (cliMode) {
   });
   ipcMain.handle('engine:configure', async (_event, value: unknown) => {
     const config = z.object({ enginePath: z.string().optional(), modelDir: z.string().optional() }).strict().parse(value);
+    const modelDirChanged = config.modelDir !== undefined && config.modelDir !== settings.get('modelDir');
     if (config.enginePath !== undefined) settings.set('enginePath', config.enginePath);
     if (config.modelDir !== undefined) settings.set('modelDir', config.modelDir);
+    if (config.modelDir && modelDownloader && modelDownloader.status.state !== 'ready' &&
+      (modelDirChanged || modelDownloader.status.state === 'error')) void modelDownloader.restart();
     return configuredEngine().status();
   });
   ipcMain.handle('semantic:status', () => ({
@@ -510,9 +552,12 @@ if (cliMode) {
     }
     semanticEmbedder.dispose();
     semanticReranker.clear();
+    const modelPathChanged = config.modelPath !== settings.get('semanticModelPath');
     settings.set('semanticEnginePath', config.enginePath);
     settings.set('semanticModelPath', config.modelPath);
     settings.set('semanticEnabled', Boolean(config.enginePath && config.modelPath));
+    if (config.modelPath && modelDownloader && modelDownloader.status.state !== 'ready' &&
+      (modelPathChanged || modelDownloader.status.state === 'error')) void modelDownloader.restart();
     return { ...config, configured: Boolean(config.enginePath && config.modelPath) };
   });
   ipcMain.handle('scene-model:status', () => ({ modelPath: sceneModelPaths().modelPath ?? '', configured: Boolean(sceneModelPaths().modelPath) }));

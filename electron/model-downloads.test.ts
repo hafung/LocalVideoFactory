@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
@@ -18,6 +18,12 @@ async function temporary() {
 }
 const request = (callback: (url: string, options: RequestInit) => Promise<Response> | Response) =>
   vi.fn(callback) as unknown as typeof fetch;
+async function writeResource(root: string, relative: string, value = content) {
+  const file = path.join(root, relative);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, value);
+  return file;
+}
 
 describe('resumable model downloads', () => {
   it('resumes an interrupted download and only promotes a verified file', async () => {
@@ -83,6 +89,98 @@ describe('resumable model downloads', () => {
 });
 
 describe('first launch model preparation', () => {
+  it('imports a complete manual setup including the shared tokenizer and extracted archive without fetching', async () => {
+    const root = await temporary();
+    const manual = await temporary();
+    const tts = 'models/qwen3-tts-1.7b-customvoice/model.safetensors';
+    const tokenizer = 'models/qwen3-tts-tokenizer/model.safetensors';
+    const embedding = 'semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf';
+    const sense = 'models/sensevoice-small/model.int8.onnx';
+    const custom = await writeResource(manual, 'voice-weights/model.safetensors');
+    await writeResource(manual, 'models/qwen3-tts-1.7b-base/speech_tokenizer/model.safetensors');
+    const gguf = await writeResource(manual, 'weights/embedding.gguf');
+    await writeResource(manual, sense);
+    const catalog: ModelDownloads = {
+      schemaVersion: 1,
+      files: [tts, tokenizer, embedding].map(relative => ({ ...descriptor, path: relative, url: 'https://example.org/model' })),
+      archives: [{ path: 'sensevoice.tar.bz2', url: 'https://example.org/archive', files: [{ ...descriptor, path: sense, member: 'sense/model.int8.onnx' }] }],
+      manifests: [{ path: 'models/sensevoice-small/manifest.json', data: { version: 'test' } }]
+    };
+    const catalogPath = await writeResource(root, 'catalog.json', JSON.stringify(catalog));
+    const cache = path.join(root, 'cache');
+    await writeResource(cache, tts, 'x'.repeat(content.length));
+    const network = vi.fn(() => { throw new Error('network must not be used'); });
+    const downloader = new ModelDownloader(catalogPath, cache, () => {}, network,
+      () => ({ roots: [manual], narrationModelDir: path.dirname(custom), embeddingModelPath: gguf }));
+
+    await downloader.start();
+
+    expect(network).not.toHaveBeenCalled();
+    expect(downloader.status).toMatchObject({ state: 'ready', completedFiles: 4 });
+    for (const relative of [tts, tokenizer, embedding, sense]) expect(await readFile(path.join(cache, relative), 'utf8')).toBe(content);
+    expect(await readFile(custom, 'utf8')).toBe(content);
+    expect(JSON.parse(await readFile(path.join(cache, catalog.manifests[0].path), 'utf8'))).toEqual({ version: 'test' });
+    expect(await readdir(path.dirname(path.join(cache, tts)))).toEqual(['model.safetensors']);
+  });
+
+  it('imports valid local files before fetching and downloads only missing or invalid entries', async () => {
+    const root = await temporary();
+    const manual = await temporary();
+    const invalid = { ...descriptor, path: 'models/wrong.bin', url: 'https://example.org/wrong' };
+    const valid = { ...descriptor, url: 'https://example.org/valid' };
+    const archiveMember = { ...descriptor, path: 'models/sense/tokens.txt', member: 'sense/tokens.txt' };
+    await writeResource(manual, invalid.path, 'x'.repeat(content.length));
+    await writeResource(manual, valid.path);
+    await writeResource(manual, archiveMember.path);
+    const catalog: ModelDownloads = {
+      schemaVersion: 1, files: [invalid, valid],
+      archives: [{ path: 'sense.tar.bz2', url: 'https://example.org/archive', files: [archiveMember] }], manifests: []
+    };
+    const catalogPath = await writeResource(root, 'catalog.json', JSON.stringify(catalog));
+    const cache = path.join(root, 'cache');
+    const network = request(async url => {
+      expect(url).toBe(invalid.url);
+      expect(await readFile(path.join(cache, valid.path), 'utf8')).toBe(content);
+      expect(await readFile(path.join(cache, archiveMember.path), 'utf8')).toBe(content);
+      expect(await stat(path.join(cache, invalid.path)).catch(() => undefined)).toBeUndefined();
+      return new Response(content);
+    });
+    const downloader = new ModelDownloader(catalogPath, cache, () => {}, network, () => ({ roots: [manual] }));
+
+    await downloader.start();
+
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(downloader.status).toMatchObject({ state: 'ready', completedFiles: 3 });
+    expect(await readFile(path.join(manual, invalid.path), 'utf8')).toBe('x'.repeat(content.length));
+    expect((await readdir(path.join(cache, 'models'))).sort()).toEqual(['sense', 'test.bin', 'wrong.bin']);
+  });
+
+  it('switches from an active download to a newly selected source without concurrent writes', async () => {
+    const root = await temporary();
+    const manual = await temporary();
+    await writeResource(manual, descriptor.path);
+    const catalog = { schemaVersion: 1, files: [{ ...descriptor, url: 'https://example.org/file' }], archives: [], manifests: [] };
+    const catalogPath = await writeResource(root, 'catalog.json', JSON.stringify(catalog));
+    const cache = path.join(root, 'cache');
+    let fetchStarted!: () => void;
+    const startedFetch = new Promise<void>(resolve => { fetchStarted = resolve; });
+    const network = request((_url, options) => new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+      fetchStarted();
+    }));
+    let sources: string[] = [];
+    const downloader = new ModelDownloader(catalogPath, cache, () => {}, network, () => ({ roots: sources }));
+
+    const onlineAttempt = downloader.start();
+    await startedFetch;
+    sources = [manual];
+    await Promise.all([onlineAttempt, downloader.restart(), downloader.restart()]);
+
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(downloader.status).toMatchObject({ state: 'ready', completedFiles: 1 });
+    expect(await readFile(path.join(cache, descriptor.path), 'utf8')).toBe(content);
+  });
+
   it('extracts and verifies archive members, then restarts offline and repairs changed files', async () => {
     const source = await temporary();
     await mkdir(path.join(source, 'sense'));

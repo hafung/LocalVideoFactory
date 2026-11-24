@@ -2,7 +2,7 @@
 
 [中文首页](../README.md) · [English overview](../README.en.md)
 
-当前源码版本为 `package.json` 中的 v0.2.9。Windows 安装包和对应版本说明见 [GitHub Releases](https://github.com/hafung/LocalVideoFactory/releases/latest)；希望自行构建或体验未发布改动时，请按下文准备环境与资源。
+当前源码版本见 `package.json`。Windows 安装包和对应版本说明见 [GitHub Releases](https://github.com/hafung/LocalVideoFactory/releases/latest)；希望自行构建或体验未发布改动时，请按下文准备环境与资源。
 
 应用内名称、数据目录、CLI 命令及安装包文件名仍保留 `声织 VoxWeave` / `voxweave`，以兼容已有工程和脚本。GitHub 仓库已更名为 `hafung/LocalVideoFactory`。
 
@@ -46,6 +46,67 @@ pnpm setup:scene-model
 普通安装包内置原生运行时，首次启动下载约 9 GB 的语音与检索模型，支持进度、断点续传、哈希校验和失败重试。**Qwen3.5-4B 和视觉投影不在当前安装包的首启下载清单中**，需要单独准备：运行 `pnpm setup:scene-model`，或在设置中选择已下载的语言模型，匹配的 `mmproj-F16.gguf` 放在同目录。完整离线便携包会校验并携带分镜资源。
 
 [分镜模型说明](../resources/scene-planner/README.md) · [语义模型说明](../resources/semantic/README.md) · [FFmpeg](../resources/ffmpeg/README.md) · [渲染浏览器](../resources/browser/README.md)
+
+从 v0.2.10 起，可以在「文案成片」的首启提示中点击「导入本地模型」，选择包含 `models` 或 `semantic` 的 `resources` 文件夹。应用按清单校验并将已有文件复制到模型缓存，只下载缺失或校验失败的文件。完整模型可断网导入。缓存位于 `%APPDATA%\voxweave\model-resources`，请为需要复制的文件预留空间。
+
+## Windows 安装包离线部署（v0.2.9）
+
+「保存并检测旁白引擎」只检查设置里的引擎和旁白模型。主界面的首启检查按安装目录的 **resources\model-downloads.json** 校验 **%APPDATA%\voxweave\model-resources** 里的 27 个文件。两个检查各自运行，所以设置页显示「引擎就绪」时，主界面仍可能报模型准备失败。
+
+1. 在目标 Windows x64 电脑安装 [VoxWeave-Setup-0.2.9-x64.exe](https://github.com/hafung/LocalVideoFactory/releases/tag/v0.2.9)，打开一次后退出。安装包已包含推理、字幕和导出所需的运行时。模型缓存约占 9 GB，请确认 **%APPDATA%** 所在磁盘有足够空间。
+2. 已经用脚本下载模型的用户可直接使用现有的 **resources**。如需补齐，在能访问 Hugging Face 和 GitHub 的 Windows 电脑上解压 [v0.2.9 源码](https://github.com/hafung/LocalVideoFactory/archive/refs/tags/v0.2.9.zip)，在解压后的项目根目录打开 PowerShell，运行以下命令。将准备好的 **resources\models** 和 **resources\semantic\model** 随原目录结构复制到目标电脑。下载步骤可以在另一台电脑完成。
+
+   ~~~powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\download-model.ps1 -Variant custom-1.7b
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\download-model.ps1 -Variant base-1.7b
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-sensevoice.ps1
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-semantic.ps1
+   ~~~
+
+3. 保持应用关闭，在目标电脑的 PowerShell 中修改前两行路径后运行下列代码。它按安装包的清单校验并复制文件，已经校验通过的缓存文件会直接复用。源码脚本下载的 **speech_tokenizer** 会放到安装包共用的 **models\qwen3-tts-tokenizer**。复制与校验可在断网时完成。
+
+   ~~~powershell
+   $installedResources = 'D:\VoxWeave\resources'      # 安装目录下的 resources
+   $downloadedResources = 'E:\LocalVideoFactory\resources' # 已下载模型的 resources
+   $ErrorActionPreference = 'Stop'
+   $cache = Join-Path $env:APPDATA 'voxweave\model-resources'
+   $catalog = Get-Content -LiteralPath (Join-Path $installedResources 'model-downloads.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+   $files = @($catalog.files)
+   foreach ($archive in $catalog.archives) { $files += @($archive.files) }
+
+   function Test-ModelHash($file, $hash) {
+       (Test-Path -LiteralPath $file -PathType Leaf) -and
+           ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -eq $hash)
+   }
+
+   $missing = foreach ($entry in $files) {
+       $relative = $entry.path.Replace('/', '\')
+       $target = Join-Path $cache $relative
+       if (Test-ModelHash $target $entry.sha256) { continue }
+       $source = Join-Path $downloadedResources $relative
+       if ($relative.StartsWith('models\qwen3-tts-tokenizer\') -and
+           !(Test-Path -LiteralPath $source -PathType Leaf)) {
+           $leaf = Split-Path -Leaf $relative
+           $source = Join-Path $downloadedResources "models\qwen3-tts-1.7b-customvoice\speech_tokenizer\$leaf"
+       }
+       if (!(Test-ModelHash $source $entry.sha256)) {
+           $entry.path
+           continue
+       }
+       New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+       Copy-Item -LiteralPath $source -Destination $target -Force
+   }
+   if ($missing) {
+       $newline = [Environment]::NewLine
+       throw ("以下文件缺失或 SHA-256 不符：" + $newline + ($missing -join $newline))
+   }
+   Write-Host "模型文件齐全，共 $($files.Count) 个：$cache"
+   ~~~
+
+4. 断网启动应用。首次启动会读取大文件做 SHA-256 校验，校验完成后提示消失。程序会自动写入对应版本的 **manifest.json**。如果设置里保存过其他模型路径，可以把「旁白模型目录」切换到 **%APPDATA%\voxweave\model-resources\models\qwen3-tts-1.7b-customvoice** 展开后的绝对路径。「引擎路径」指向安装目录的 **resources\engine\qwen_tts.exe**。启用本地语义检索时，使用安装目录的 **resources\semantic\runtime\llama-server.exe** 和缓存里的 **semantic\model\Qwen3-Embedding-0.6B-Q8_0.gguf**。
+5. 用一两句文案和预设音色试生成，可先导入本地视频或图片。文案分镜可先用「使用关键词规则」。如需 AI 分镜，另外准备 [Qwen3.5-4B 与匹配的视觉投影](../resources/scene-planner/README.md)，在设置中选择语言模型，把 **mmproj-F16.gguf** 放在同目录。
+
+如果仍显示准备失败，请记录安装包版本、横幅完整报错和已准备的文件数。上面 PowerShell 输出的缺失或校验失败文件列表也有助于定位问题。
 
 ## 在 Windows 启动
 

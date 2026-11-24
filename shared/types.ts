@@ -73,6 +73,7 @@ export interface VoxWeaveApi {
   talkingHead: import('./talking-head.js').TalkingHeadApi;
   modelSetupStatus(): Promise<import('./model-downloads.js').ModelSetupStatus>;
   retryModelSetup(): Promise<void>;
+  importLocalModels(): Promise<void>;
   onModelSetupProgress(listener: (status: import('./model-downloads.js').ModelSetupStatus) => void): () => void;
   getStatus(): Promise<EngineStatus>;
   configure(config: { enginePath?: string; modelDir?: string }): Promise<EngineStatus>;
