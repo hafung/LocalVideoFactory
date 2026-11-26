@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,7 @@ describe('publishing', () => {
       const privateData = path.join(directory, 'private');
       await mkdir(privateData);
       await expect(publishDestination(privateData, privateData)).rejects.toThrow('应用数据目录');
-      expect(await publishDestination(directory, privateData)).toBe(directory);
+      expect(await publishDestination(directory, privateData)).toBe(await realpath(directory));
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
