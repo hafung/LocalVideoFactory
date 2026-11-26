@@ -13,7 +13,7 @@ Two local workflows in one desktop app, with a shared media library and creative
 [简体中文](README.md) · [English](README.en.md) · [Download for Windows](https://github.com/hafung/LocalVideoFactory/releases/latest) · [Run from source](docs/building.md) · [Issues](https://github.com/hafung/LocalVideoFactory/issues)
 
 [![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
-[![Source](https://img.shields.io/badge/source-v0.2.11-d9ff69?labelColor=17181d)](package.json)
+[![Source](https://img.shields.io/badge/source-v0.2.12-d9ff69?labelColor=17181d)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
 [![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#a-local-ai-production-stack)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)

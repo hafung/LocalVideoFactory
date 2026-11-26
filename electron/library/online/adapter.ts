@@ -3,7 +3,7 @@ import { AssetLicenseSchema, OnlineTypeSchema, type CoverrTier, type OnlineSourc
 
 export const PAGE_SIZE = 12;
 export const DAY = 24 * 60 * 60_000;
-export const USER_AGENT = 'FrameSkiff/0.2.11 (https://github.com/hafung/LocalVideoFactory/issues)';
+export const USER_AGENT = 'FrameSkiff/0.2.12 (https://github.com/hafung/LocalVideoFactory/issues)';
 
 export const remoteMediaSchema = z.object({
   id: z.string(), type: OnlineTypeSchema, name: z.string(), thumbnail: z.string(), preview: z.string(),

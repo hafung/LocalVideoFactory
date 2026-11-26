@@ -6,7 +6,7 @@ import { QwenEngine } from '../electron/engine.js';
 import { AUDIO_FORMATS, LANGUAGES, type AudioFormat, type Language, type SynthesisRequest } from '../shared/types.js';
 
 const program = new Command();
-program.name('voxweave').description('帧舟 FrameSkiff · Qwen3-TTS 本地语音合成 CLI').version('0.2.11');
+program.name('voxweave').description('帧舟 FrameSkiff · Qwen3-TTS 本地语音合成 CLI').version('0.2.12');
 program
   .requiredOption('-t, --text <text>', '普通文案，自动处理朗读节奏与段落停顿')
   .requiredOption('-o, --output <wav>', '输出 WAV 路径')
