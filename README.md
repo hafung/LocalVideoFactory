@@ -26,11 +26,12 @@
 
 ## 先看项目演示
 
-这条 31 秒的有声演示介绍了文案成片流程，片中使用项目旧称。
+| 文案成片 | 口播精剪前后对照 |
+| --- | --- |
+| [观看有声 MP4](docs/demos/frameskiff-script.mp4?raw=true) · [封面](docs/demos/frameskiff-script.jpg) · [发布文案](docs/demos/frameskiff-script-post.txt) | [观看有声 MP4](docs/demos/frameskiff-talk.mp4?raw=true) · [封面](docs/demos/frameskiff-talk.jpg) · [发布文案](docs/demos/frameskiff-talk-post.txt) |
+| 从文案生成旁白和字幕，再更换一个分镜画面。 | 对同一段合成原声缩短长停顿、补字幕和提示卡。 |
 
-https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
-
-[下载完整有声 MP4（6.4 MB）](docs/demos/LocalVideoFactory_BrandFilm_16x9.mp4?raw=true)
+[查看播放器、源素材和复现步骤](docs/demos/README.md)
 
 成片生成后，可以在工作台预览，并按分镜卡片调整画面和字幕。
 
@@ -38,7 +39,7 @@ https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
 
 ## 从文案到成片，一条流水线
 
-顶部可以切换 **文案成片** 和 **口播精剪**，两种模式共用素材库与创作设置。口播精剪保留本人原声，可缩短长停顿、试听口头语建议、校正字幕，并为重点添加卡片、图解、B-roll 或画中画。支持 MP4、SRT 和 ASS 导出。 [口播功能说明](docs/talking-head.zh-CN.md)
+顶部可以切换 **文案成片** 和 **口播精剪**，两种模式共用素材库与创作设置。口播精剪保留本人原声，可缩短长停顿、试听口头语建议、校正字幕，并为重点添加卡片、图解、B-roll 或画中画。启用本地分镜模型后，还可按发布目的提取待试听的精彩片段。两个模式都可导出包含 MP4、封面和文案的发布包。 [口播功能说明](docs/talking-head.zh-CN.md)
 
 ```text
 文案 + 可选原始视频

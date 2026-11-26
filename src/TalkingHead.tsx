@@ -3,9 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { HyperframesPlayer } from '@hyperframes/player';
 import { Film, FolderOpen, Play, Plus, RefreshCw, Scissors, Square, Upload, X } from 'lucide-react';
 import { TalkVoiceEnhancement } from './TalkVoiceEnhancement';
-import { sourceToTalkTime, talkDuration, type TalkProject, type TalkResult, type TalkProgress,
+import { TalkHighlightsPanel } from './TalkHighlightsPanel';
+import { TalkFramingPanel } from './TalkFramingPanel';
+import { PublishPanel } from './PublishPanel';
+import { defaultTalkFraming, sourceToTalkTime, talkDuration, type TalkProject, type TalkResult, type TalkProgress,
   type TalkUpdate, type TalkExportProgress, type TalkOverlay, type TalkCaptionSettings } from '../shared/talking-head';
 import type { MediaAsset } from '../shared/library';
+import type { PublishDraft } from '../shared/publishing';
 
 const desktop = () => window.voxweave;
 const api = () => desktop()?.talkingHead;
@@ -31,7 +35,8 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
   const [exportProgress, setExportProgress] = useState<TalkExportProgress>();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [selectedCue, setSelectedCue] = useState('');
-  const [tab, setTab] = useState<'captions' | 'cuts' | 'visuals'>('captions');
+  const [tab, setTab] = useState<'captions' | 'cuts' | 'visuals' | 'highlights'>('captions');
+  const [highlightBusy, setHighlightBusy] = useState(false);
   const [manualStart, setManualStart] = useState('0');
   const [manualEnd, setManualEnd] = useState('');
   const [sourcePreview, setSourcePreview] = useState<{ startMs: number; endMs: number; label: string }>();
@@ -46,7 +51,8 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
   const generationReceived = useRef(false);
   const finishedJobs = useRef(new Set<string>()), finishedExports = useRef(new Set<string>());
   const resumeRequest = useRef<Promise<TalkResult | null> | undefined>(undefined);
-  const pending = busy || !!job || !!exportJob;
+  const pending = busy || !!job || !!exportJob || highlightBusy;
+  const framing = project?.framing ?? defaultTalkFraming;
 
   function accept(next: TalkResult, clearDrafts = true) {
     setResult(next); setStrength(next.project.strength);
@@ -152,12 +158,19 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
     } catch (error) { setError(messageOf(error)); }
     finally { setBusy(false); }
   }
-  async function exportFile(kind: 'mp4' | 'srt' | 'ass') {
-    if (!project || !api() || pending) return;
+  async function exportFile(kind: 'mp4' | 'srt' | 'ass' | 'publish', highlightId?: string, draft?: PublishDraft): Promise<boolean> {
+    if (!project || !api() || pending || dirty) return false;
     setBusy(true); setError(''); setExportProgress(undefined);
-    try { const next = await api()!.export(project.id, kind); if (next && !finishedExports.current.has(next.jobId)) { exportRef.current = next.jobId; setExportJob(next.jobId); } }
-    catch (error) { setError(messageOf(error)); }
+    try {
+      const next = await api()!.export(project.id, kind, { revision: project.revision, highlightId, draft });
+      if (next && !finishedExports.current.has(next.jobId)) { exportRef.current = next.jobId; setExportJob(next.jobId); }
+      return Boolean(next);
+    }
+    catch (error) { setError(messageOf(error)); return false; }
     finally { setBusy(false); }
+  }
+  function applyAspect(aspect: '9:16' | '16:9') {
+    void update({ framing: { ...framing, aspect, layout: 'fit' } }, false);
   }
   function inspect(startMs: number, endMs: number, label: string) {
     playerRef.current?.pause();
@@ -206,6 +219,8 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
         {job && <button className="secondary-button" onClick={() => void api()?.cancel(job)}><Square size={13}/> 取消处理</button>}
         {project && <>
           <div className="talk-divider"/>
+          <TalkFramingPanel key={`${project.id}-${JSON.stringify(framing)}`} framing={framing} disabled={pending}
+            apply={value => void update({ framing: value }, false)}/>
           <label className="talk-field">字幕出现方式<select aria-label="口播字幕出现方式" disabled={pending} value={project.captions.reveal}
             onChange={event => void update({ captions: { ...project.captions, reveal: event.target.value as TalkCaptionSettings['reveal'] } })}>
             {Object.entries(revealNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -246,9 +261,15 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
             : <div className="talk-empty"><Film size={40}/><h3>从你录好的口播开始</h3><p>自然停顿、原声和你的表达，<br/>都由你决定如何保留。</p></div>}
         </div>
         {project && result && <>
-          <p className="talk-metadata">{project.source.name} · {seconds(result.preview.durationMs)} · {project.source.width} × {project.source.height}</p>
+          <p className="talk-metadata">{project.source.name} · {seconds(result.preview.durationMs)} · {result.preview.width} × {result.preview.height}</p>
           <div className="talk-actions"><button className="talk-primary" disabled={pending || dirty} onClick={() => void exportFile('mp4')}><Film size={15}/> 导出 MP4</button>
             <button disabled={pending || dirty} onClick={() => void exportFile('srt')}>SRT</button><button disabled={pending || dirty} onClick={() => void exportFile('ass')}>动态 ASS</button></div>
+          <PublishPanel key={project.id} title={project.source.name.replace(/\.[^.]+$/u, '')}
+            evidence={project.cues.filter(cue => !project.cuts.some(cut => cut.applied && cut.startMs <= cue.startMs && cut.endMs >= cue.endMs))
+              .map(cue => (cue.text || cue.originalText).replace(/\|/gu, '')).join('\n')}
+            durationMs={result.preview.durationMs} width={result.preview.width} height={result.preview.height}
+            disabled={pending || dirty} playhead={() => playerRef.current?.currentTime} applyAspect={applyAspect}
+            onExport={draft => void exportFile('publish', undefined, draft)}/>
           {dirty && <p className="talk-hint">保存字幕后即可导出。</p>}
         </>}
         {exportProgress && <div className="talk-progress" role="status"><span>{exportProgress.message}</span>
@@ -263,7 +284,7 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
       </section>
 
       <section className="talk-editor" aria-label="口播精修">
-        <div className="talk-tabs" role="group" aria-label="精修内容"><button aria-pressed={tab === 'captions'} onClick={() => setTab('captions')}>字幕校正</button><button aria-pressed={tab === 'cuts'} onClick={() => setTab('cuts')}>剪辑记录</button><button aria-pressed={tab === 'visuals'} onClick={() => { setTab('visuals'); chooseCue(selectedCue); }}>画面增强</button></div>
+        <div className="talk-tabs" role="group" aria-label="精修内容"><button disabled={highlightBusy} aria-pressed={tab === 'captions'} onClick={() => setTab('captions')}>字幕校正</button><button disabled={highlightBusy} aria-pressed={tab === 'cuts'} onClick={() => setTab('cuts')}>剪辑记录</button><button disabled={highlightBusy} aria-pressed={tab === 'visuals'} onClick={() => { setTab('visuals'); chooseCue(selectedCue); }}>画面增强</button><button disabled={highlightBusy || !project} aria-pressed={tab === 'highlights'} onClick={() => setTab('highlights')}>精彩片段</button></div>
         {!project ? <p className="talk-hint">完成识别后，在这里校正字幕、试听剪点和添加画面。</p> : <>
           {tab === 'captions' && <>
             <p className="talk-hint">修改或清空字幕只改变文字。用 | 指定词组边界；剪除音视频请到「剪辑记录」。</p>
@@ -309,6 +330,12 @@ export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
             <button className="talk-primary" disabled={pending || !selectedCue || (['callout', 'whiteboard'].includes(overlayType) ? !overlayText.trim() : !overlayAsset)} onClick={() => void addOverlay()}><Plus size={15}/> 应用到这句话</button>
             {project.overlays.map(overlay => <article className="talk-cut" key={overlay.id}><div><b>{overlay.type === 'whiteboard' ? '手绘图解' : overlay.type === 'callout' ? '重点卡片' : overlay.type === 'image' ? '图片贴图' : 'B-roll 视频'}</b><span>{overlay.enabled ? '启用' : '关闭'}</span></div><p>{overlay.text || assets.find(asset => asset.id === overlay.assetId)?.name}</p>
               <div className="talk-actions"><button disabled={pending} onClick={() => chooseCue(overlay.cueId)}>编辑</button><button disabled={pending} onClick={() => void update({ overlays: project.overlays.map(item => item.id === overlay.id ? { ...item, enabled: !item.enabled } : item) })}>{overlay.enabled ? '关闭' : '启用'}</button><button disabled={pending} onClick={() => void update({ overlays: project.overlays.filter(item => item.id !== overlay.id) })}>移除</button></div></article>)}
+          </>}
+          {tab === 'highlights' && result && <>
+            {dirty && <p className="talk-hint">保存字幕后可以分析或导出精彩片段。</p>}
+            <TalkHighlightsPanel key={project.id} project={project} width={result.preview.width} height={result.preview.height}
+              disabled={pending || dirty} onBusy={setHighlightBusy} audition={(start, end, title) => inspect(start, end, title)}
+              exportClip={(id, draft) => exportFile(draft ? 'publish' : 'mp4', id, draft)} applyAspect={applyAspect}/>
           </>}
         </>}
       </section>

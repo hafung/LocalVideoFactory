@@ -2,6 +2,7 @@ import '@hyperframes/player';
 import './library.css';
 import { LibraryPanel } from './LibraryPanel';
 import { ModelProgress } from './ModelProgress';
+import { PublishPanel } from './PublishPanel';
 import type { HyperframesPlayer } from '@hyperframes/player';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -15,6 +16,7 @@ import type { MediaAsset, OnlineAsset } from '../shared/library';
 import type { SceneCandidate, SceneCandidateResult, SceneChoice } from '../shared/scene-candidates';
 import type { CompositionProgressEvent, EngineStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
 import type { ModelSetupStatus, OptionalModel, OptionalModelStatus } from '../shared/model-downloads';
+import type { PublishDraft } from '../shared/publishing';
 
 const api = () => window.voxweave;
 function captionAnnotation(cue: CaptionCue): string {
@@ -129,6 +131,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   const [downloadingOnlineId, setDownloadingOnlineId] = useState<string>();
   const candidateSearchToken = useRef(0);
   const playerRef = useRef<HyperframesPlayer>(null);
+  const finishedExport = useRef<string | undefined>(undefined);
 
   async function refreshModelSettings() {
     const desktop = api();
@@ -172,7 +175,9 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   }, []);
   useEffect(() => api()?.onExportProgress(event => {
     setExportProgress(event);
-    if (['complete', 'error', 'cancelled'].includes(event.phase)) { setExportJob(undefined); setExportPending(false); }
+    if (['complete', 'error', 'cancelled'].includes(event.phase)) {
+      finishedExport.current = event.jobId; setExportJob(undefined); setExportPending(false);
+    }
   }), []);
   useEffect(() => {
     if (!plan) return;
@@ -328,10 +333,13 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     } catch (error) { setPreviewError(error instanceof Error ? error.message : String(error)); }
     finally { setBgmBusy(false); }
   }
-  async function exportVideo() {
+  async function exportVideo(draft?: PublishDraft) {
     if (!projectId || needsGeneration) return;
     setExportPending(true); setExportProgress(undefined);
-    try { const result = await api()!.exportVideo(projectId); if (result) setExportJob(result.jobId); }
+    try {
+      const result = await api()!.exportVideo(projectId, draft);
+      if (result && result.jobId !== finishedExport.current) setExportJob(result.jobId);
+    }
     catch (error) { setExportProgress({ jobId: '', phase: 'error', progress: 0, message: error instanceof Error ? error.message : String(error) }); }
     finally { setExportPending(false); }
   }
@@ -590,7 +598,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
             <small>更新字幕无需重新生成旁白</small>
           </div>
           {captionError && !captionEditor && <p className="field-error" role="alert">{captionError}</p>}
-          <div className="export-actions"><button className="export-primary" disabled={working || !!replacingScene || needsGeneration} onClick={exportVideo}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
+          <div className="export-actions"><button className="export-primary" disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportVideo()}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
             <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('narration-mp3')}>导出旁白 MP3</button>
             <button disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportArtifact('mixed-mp3')}>导出混音 MP3</button>
             <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('srt')}>导出 SRT</button>
@@ -598,6 +606,9 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
             {exportJob && <button onClick={() => api()?.cancelExport(exportJob)}>取消导出</button>}
             {exportProgress?.outputPath && <button onClick={() => api()?.reveal(exportProgress.outputPath!)}>打开成品所在文件夹</button>}
           </div>
+          <PublishPanel key={plan.id} title={plan.scenes[0]?.script} evidence={plan.captions.map(cue => cue.text).join('\n') || plan.input.script}
+            durationMs={preview.durationMs} width={preview.width} height={preview.height} disabled={working || !!replacingScene || needsGeneration}
+            playhead={() => playerRef.current?.currentTime} applyAspect={setAspectRatio} onExport={draft => void exportVideo(draft)}/>
           {needsGeneration && <small>设置已修改，点击高亮的“生成视频”更新成片。</small>}
           {exportProgress && <div className="export-progress" role={exportProgress.phase === 'error' ? 'alert' : 'status'}><span>{exportProgress.message}</span>{exportJob && <progress max="1" value={exportProgress.progress}/>}</div>}
         </div>}

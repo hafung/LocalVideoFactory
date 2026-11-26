@@ -26,11 +26,12 @@ Two local workflows in one desktop app, with a shared media library and creative
 
 ## Watch the project demo
 
-This 31-second demo shows the script-to-video workflow under the project’s former name.
+| Script to video | Talking-head before and after |
+| --- | --- |
+| [Play MP4](docs/demos/frameskiff-script.mp4?raw=true) · [Cover](docs/demos/frameskiff-script.jpg) · [Post copy](docs/demos/frameskiff-script-post.txt) | [Play MP4](docs/demos/frameskiff-talk.mp4?raw=true) · [Cover](docs/demos/frameskiff-talk.jpg) · [Post copy](docs/demos/frameskiff-talk-post.txt) |
+| Generate narration and captions from a script, then swap one scene’s visual. | Shorten a long pause and add captions to the same sample recording with synthesized speech. |
 
-https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
-
-[Download the full MP4 with sound (6.4 MB)](docs/demos/LocalVideoFactory_BrandFilm_16x9.mp4?raw=true)
+[Demo player and source material](docs/demos/README.md)
 
 Preview the result in the studio, then adjust footage and captions with scene cards.
 

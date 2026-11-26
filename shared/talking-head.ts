@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { VoiceEnhancementSchema } from './voice-enhancement.js';
+import type { PublishDraft } from './publishing.js';
 
 // Deliberately separate from EditPlan: recorded speech is the source of truth.
 const ms = z.number().int().nonnegative();
@@ -7,6 +8,12 @@ export const TalkRangeSchema = z.object({ startMs: ms, endMs: ms }).strict()
   .refine(range => range.endMs > range.startMs, '时间区间无效');
 export type TalkRange = z.infer<typeof TalkRangeSchema>;
 export const TalkStrengthSchema = z.enum(['light', 'natural', 'tight']);
+export const TalkFramingSchema = z.object({
+  aspect: z.enum(['source', '9:16', '16:9', '1:1']), layout: z.enum(['fit', 'crop']),
+  x: z.number().int().min(0).max(100), y: z.number().int().min(0).max(100)
+}).strict();
+export type TalkFraming = z.infer<typeof TalkFramingSchema>;
+export const defaultTalkFraming: TalkFraming = { aspect: 'source', layout: 'fit', x: 50, y: 50 };
 export const TalkCaptionSettingsSchema = z.object({
   enabled: z.boolean().default(true),
   reveal: z.enum(['sentence', 'character', 'phrase']).default('phrase'),
@@ -55,6 +62,7 @@ export const TalkProjectSchema = z.object({
     durationMs: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive()
   }).strict(),
   strength: TalkStrengthSchema, captions: TalkCaptionSettingsSchema,
+  framing: TalkFramingSchema.optional(),
   // Raw cues/tokens always use source time, including after cuts and corrections.
   cues: z.array(TalkCueSchema).max(100000), cuts: z.array(TalkCutSchema).max(100000),
   speech: z.array(TalkRangeSchema).max(100000), silence: z.array(TalkRangeSchema).max(100000),
@@ -86,6 +94,20 @@ export const TalkProjectSchema = z.object({
 export type TalkProject = z.infer<typeof TalkProjectSchema>;
 export type TalkCaptionSettings = z.infer<typeof TalkCaptionSettingsSchema>;
 
+export function talkCanvas(project: Pick<TalkProject, 'source' | 'framing'>): { width: number; height: number } {
+  switch (project.framing?.aspect) {
+    case '9:16': return { width: 1080, height: 1920 };
+    case '16:9': return { width: 1920, height: 1080 };
+    case '1:1': return { width: 1080, height: 1080 };
+    default: return { width: project.source.width, height: project.source.height };
+  }
+}
+
+export function talkCaptionMargins(width: number, height: number) {
+  return height > width ? { left: 7, right: 14, top: 10, bottom: 17 }
+    : { left: 7, right: 7, top: 10, bottom: 10 };
+}
+
 export interface TalkSpan extends TalkRange { outputStartMs: number; outputEndMs: number }
 export function mergeTalkRanges(ranges: TalkRange[]): TalkRange[] {
   const merged: TalkRange[] = [];
@@ -114,7 +136,9 @@ export function talkDuration(project: Pick<TalkProject, 'source' | 'cuts'>): num
   return talkTimeline(project).at(-1)?.outputEndMs ?? 0;
 }
 export function sourceToTalkTime(project: Pick<TalkProject, 'source' | 'cuts'>, sourceMs: number): number {
-  const spans = talkTimeline(project);
+  return talkTimeAt(talkTimeline(project), sourceMs);
+}
+export function talkTimeAt(spans: readonly TalkSpan[], sourceMs: number): number {
   for (const span of spans) {
     if (sourceMs < span.startMs) return span.outputStartMs;
     if (sourceMs < span.endMs) return span.outputStartMs + sourceMs - span.startMs;
@@ -126,12 +150,26 @@ export const TalkCreateSchema = z.object({ sourcePath: z.string().min(1),
   strength: TalkStrengthSchema.default('natural') }).strict();
 export const TalkUpdateSchema = z.object({
   revision: z.number().int().positive(), strength: TalkStrengthSchema.optional(),
-  captions: TalkCaptionSettingsSchema.optional(), audio: TalkProjectSchema.shape.audio.optional(),
+  captions: TalkCaptionSettingsSchema.optional(), audio: TalkProjectSchema.shape.audio.optional(), framing: TalkFramingSchema.optional(),
   edits: z.array(z.object({ cueId: z.string().min(1).max(160), text: z.string().max(2000) }).strict()).max(100000).optional(),
   cutDecisions: z.array(z.object({ cutId: z.string().min(1).max(160), applied: z.boolean() }).strict()).max(100000).optional(),
   manualCut: TalkRangeSchema.optional(), overlays: z.array(TalkOverlaySchema).max(2000).optional()
 }).strict();
 export type TalkUpdate = z.infer<typeof TalkUpdateSchema>;
+export const TalkHighlightSchema = z.object({
+  id: z.string().uuid(), startMs: ms, endMs: ms,
+  title: z.string().trim().min(1).max(54), reason: z.string().trim().max(220), evidence: z.string().trim().max(300),
+  origin: z.enum(['model', 'manual']), confirmed: z.boolean()
+}).strict().refine(item => item.endMs > item.startMs, '片段结束时间应晚于开始时间');
+export type TalkHighlight = z.infer<typeof TalkHighlightSchema>;
+export const TalkHighlightsSchema = z.object({
+  version: z.literal(1), goal: z.string().max(240), items: z.array(TalkHighlightSchema).max(30)
+}).strict();
+export type TalkHighlights = z.infer<typeof TalkHighlightsSchema>;
+export const TalkHighlightEditSchema = z.object({
+  id: z.string().uuid().optional(), startMs: ms, endMs: ms, title: z.string().trim().min(1).max(54)
+}).strict();
+export type TalkHighlightEdit = z.infer<typeof TalkHighlightEditSchema>;
 export const TalkVoiceAuditionSchema = z.object({
   revision: z.number().int().positive(),
   preset: VoiceEnhancementSchema.exclude(['off']),
@@ -152,7 +190,12 @@ export interface TalkingHeadApi {
   resume(): Promise<TalkResult | null>;
   update(id: string, input: TalkUpdate): Promise<TalkResult>;
   auditionVoice(id: string, input: TalkVoiceAuditionRequest): Promise<TalkVoiceAudition>;
-  export(id: string, kind: 'mp4' | 'srt' | 'ass'): Promise<{ jobId: string } | null>;
+  export(id: string, kind: 'mp4' | 'srt' | 'ass' | 'publish', options?: { revision: number; highlightId?: string; draft?: PublishDraft }): Promise<{ jobId: string } | null>;
+  highlights(id: string): Promise<TalkHighlights>;
+  findHighlights(id: string, input: { revision: number; goal: string }): Promise<TalkHighlights>;
+  cancelHighlights(id: string): Promise<void>;
+  saveHighlight(id: string, revision: number, input: TalkHighlightEdit): Promise<TalkHighlights>;
+  removeHighlight(id: string, revision: number, highlightId: string): Promise<TalkHighlights>;
   cancelExport(jobId: string): Promise<void>;
   onProgress(listener: (event: TalkProgress) => void): () => void;
   onExportProgress(listener: (event: TalkExportProgress) => void): () => void;

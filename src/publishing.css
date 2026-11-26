@@ -1,0 +1,17 @@
+.publish-panel { margin-block: .85rem; border: 1px solid #303841; border-radius: .7rem; background: #161c23; color: #edf2f6; }
+.publish-panel summary { display: flex; align-items: center; gap: .5rem; cursor: pointer; padding: .75rem; font-weight: 700; }
+.publish-panel summary::after { content: '+'; margin-left: auto; color: #b6c0cc; }
+.publish-panel[open] summary::after { content: '−'; }
+.publish-panel fieldset { border: 0; min-width: 0; margin: 0; padding: 0 .75rem .75rem; display: grid; gap: .6rem; }
+.publish-panel label { display: grid; gap: .3rem; font-size: .82rem; color: #cbd5df; }
+.publish-panel input, .publish-panel select, .publish-panel textarea { width: 100%; border: 1px solid #38424e; background: #10151b; color: #edf2f6; border-radius: .45rem; padding: .48rem .55rem; font: inherit; }
+.publish-panel textarea { resize: vertical; }
+.publish-panel button { display: inline-flex; justify-content: center; align-items: center; gap: .35rem; border: 1px solid #3a4754; border-radius: .45rem; padding: .45rem .65rem; background: #202a34; color: #edf2f6; font-size: .8rem; }
+.publish-panel button:disabled { opacity: .48; }
+.publish-panel button.publish-primary { background: #d9ff69; color: #182500; border-color: #d9ff69; font-weight: 750; }
+.publish-use-frame { justify-self: start; }
+.publish-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.publish-hint, .publish-error { margin: 0; color: #b5c2cf; font-size: .8rem; overflow-wrap: anywhere; }
+.publish-panel > .publish-hint, .publish-panel > .publish-error { padding: 0 .75rem .75rem; }
+.publish-hint button { margin: .25rem 0 .25rem .4rem; }
+.publish-error { color: #ffb7ad; }

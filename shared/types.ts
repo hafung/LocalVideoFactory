@@ -113,7 +113,8 @@ export interface VoxWeaveApi {
   downloadMusic(id: string): Promise<MediaAsset>;
   openSource(url: string): Promise<void>;
   updateAudio(projectId: string, settings: { bgm: EditPlan['bgm']; audio: EditPlan['audio']; playbackRate?: number }): Promise<{ plan: EditPlan; preview: NonNullable<CompositionProgressEvent['preview']> }>;
-  exportVideo(projectId: string): Promise<{ jobId: string } | null>;
+  exportVideo(projectId: string, publish?: import('./publishing.js').PublishDraft): Promise<{ jobId: string } | null>;
+  suggestPublishCopy(request: import('./publishing.js').PublishCopyRequest): Promise<import('./publishing.js').PublishCopySuggestion>;
   exportArtifact(projectId: string, kind: 'narration-mp3' | 'mixed-mp3' | 'srt' | 'ass'): Promise<{ outputPath: string } | null>;
   cancelExport(jobId: string): Promise<void>;
   onExportProgress(listener: (event: ExportProgress) => void): () => void;

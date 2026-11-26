@@ -4,14 +4,19 @@ import { randomUUID } from 'node:crypto';
 import { access, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { TalkCreateSchema, TalkProjectSchema, TalkUpdateSchema, TalkVoiceAuditionSchema, type TalkProject, type TalkResult,
+import { TalkCreateSchema, TalkProjectSchema, TalkUpdateSchema, TalkVoiceAuditionSchema, TalkHighlightEditSchema,
+  talkCanvas, type TalkProject, type TalkResult,
   type TalkProgress, type TalkExportProgress } from '../../shared/talking-head.js';
+import { PublishDraftSchema } from '../../shared/publishing.js';
 import { TalkProjectStore } from './store.js';
 import { talkCues, pauseCuts, fillerSuggestions, updateTalkProject } from './editing.js';
 import { importTalkVideo, analyzeTalkVideo, prepareTalkAudio, prepareTalkVoiceAudition, talkMediaStatus, type TalkMediaTools } from './media.js';
 import { compileTalkTemplate } from './compiler.js';
 import { resolveTalkAssets } from './assets.js';
 import { talkSrt, talkAss } from './captions.js';
+import { editTalkHighlight, findTalkHighlights, highlightProject } from './highlights.js';
+import { LocalLlamaScenePlanner } from '../composition/scene-planner.js';
+import { cachedPublishVideo, publishDestination, writePublishBundle } from '../publishing.js';
 import { HyperframesPreviewRenderer, type RendererTools } from '../renderers/hyperframes.js';
 import type { PreviewRegistry } from '../renderers/preview-registry.js';
 import type { MediaAsset } from '../../shared/library.js';
@@ -20,11 +25,14 @@ interface Dependencies {
   userData: string;
   mediaTools: () => TalkMediaTools | undefined;
   rendererTools: () => RendererTools | undefined;
+  sceneModelPaths: () => { enginePath?: string; modelPath?: string };
   previews: PreviewRegistry;
   library: { byId(id: string): MediaAsset | undefined; list(limit?: number): MediaAsset[] };
   allowOutput(file: string): void;
 }
 const idSchema = z.string().uuid();
+const revisionSchema = z.number().int().positive();
+const exportOptions = z.object({ revision: revisionSchema, highlightId: idSchema.optional(), draft: PublishDraftSchema.optional() }).strict().optional();
 const sameFile = (a: string, b: string) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 export function registerTalkingHead(deps: Dependencies) {
@@ -34,6 +42,7 @@ export function registerTalkingHead(deps: Dependencies) {
   const locks = new Set<string>();
   const exports = new Map<string, { controller: AbortController; renderer: HyperframesPreviewRenderer }>();
   const operations = new Set<AbortController>();
+  const highlightJobs = new Map<string, AbortController>();
   const lastPreview = new Map<string, string>();
   const tools = () => {
     const value = deps.mediaTools();
@@ -69,7 +78,16 @@ export function registerTalkingHead(deps: Dependencies) {
       return rm(path.join(previewRoot, entry.name), { recursive: true, force: true });
     }));
     return { project, preview: { entryUrl, sourceUrl: entryUrl.replace(/index\.html$/u, 'assets/source.mp4'),
-      durationMs: prepared.durationMs, width: project.source.width, height: project.source.height, warnings: rendering.warnings } };
+      durationMs: prepared.durationMs, ...talkCanvas(project), warnings: rendering.warnings } };
+  }
+  async function withProject<T>(id: string, revision: number, run: (project: TalkProject) => Promise<T>): Promise<T> {
+    if (locks.has(id)) throw new Error('口播工程正在处理，请稍后再试');
+    locks.add(id);
+    try {
+      const project = await store.read(id);
+      if (revision !== project.revision) throw new Error('口播工程已更新，请重新操作');
+      return await run(project);
+    } finally { locks.delete(id); }
   }
   function send(sender: WebContents, channel: string, value: TalkProgress | TalkExportProgress) {
     if (!sender.isDestroyed()) sender.send(channel, value);
@@ -153,60 +171,127 @@ export function registerTalkingHead(deps: Dependencies) {
       return await prepareTalkVoiceAudition(project, store.directory(id), tools().ffmpegPath, request, controller.signal);
     } finally { operations.delete(controller); }
   });
-  ipcMain.handle('talk:export', async (event, idValue: unknown, kindValue: unknown) => {
-    const id = idSchema.parse(idValue), kind = z.enum(['mp4', 'srt', 'ass']).parse(kindValue);
+  ipcMain.handle('talk:highlights', (_event, id: unknown) => store.readHighlights(idSchema.parse(id)));
+  ipcMain.handle('talk:find-highlights', async (_event, idValue: unknown, value: unknown) => {
+    const id = idSchema.parse(idValue), input = z.object({ revision: revisionSchema, goal: z.string().trim().max(240) }).strict().parse(value);
+    const paths = deps.sceneModelPaths();
+    if (!paths.modelPath || !paths.enginePath) throw new Error('请在创作设置中启用本地分镜模型，或手动添加片段');
+    return withProject(id, input.revision, async project => {
+      const controller = new AbortController();
+      const model = new LocalLlamaScenePlanner(() => paths);
+      highlightJobs.set(id, controller); operations.add(controller);
+      try {
+        const items = await findTalkHighlights(project, input.goal, (prompt, data, signal) => model.json(prompt, data, signal, undefined, 1200), controller.signal);
+        const saved = (await store.readHighlights(id)).items.filter(item => item.confirmed);
+        const proposed = items.filter(item => !saved.some(clip => Math.min(clip.endMs, item.endMs) - Math.max(clip.startMs, item.startMs) >=
+          Math.min(clip.endMs - clip.startMs, item.endMs - item.startMs) * .6));
+        controller.signal.throwIfAborted();
+        return await store.saveHighlights(id, { version: 1, goal: input.goal, items: [...saved, ...proposed].slice(0, 30) });
+      } catch (error) {
+        if (controller.signal.aborted) throw new Error('已取消精彩片段分析');
+        throw error;
+      } finally { model.dispose(); highlightJobs.delete(id); operations.delete(controller); }
+    });
+  });
+  ipcMain.handle('talk:cancel-highlights', (_event, id: unknown) => highlightJobs.get(idSchema.parse(id))?.abort());
+  ipcMain.handle('talk:save-highlight', (_event, idValue: unknown, revision: unknown, value: unknown) => {
+    const id = idSchema.parse(idValue), edit = TalkHighlightEditSchema.parse(value);
+    return withProject(id, revisionSchema.parse(revision), async project => {
+      const state = await store.readHighlights(id);
+      const current = edit.id ? state.items.find(item => item.id === edit.id) : undefined;
+      if (edit.id && !current) throw new Error('精彩片段已移除');
+      if (!current && state.items.length >= 30) throw new Error('每个工程最多保存 30 条精彩片段');
+      const next = editTalkHighlight(project, current, edit);
+      const items = current ? state.items.map(item => item.id === next.id ? next : item) : [...state.items, next];
+      return store.saveHighlights(id, { ...state, items });
+    });
+  });
+  ipcMain.handle('talk:remove-highlight', (_event, idValue: unknown, revision: unknown, highlightValue: unknown) => {
+    const id = idSchema.parse(idValue), highlightId = idSchema.parse(highlightValue);
+    return withProject(id, revisionSchema.parse(revision), async () => {
+      const state = await store.readHighlights(id);
+      return store.saveHighlights(id, { ...state, items: state.items.filter(item => item.id !== highlightId) });
+    });
+  });
+  ipcMain.handle('talk:export', async (event, idValue: unknown, kindValue: unknown, optionsValue: unknown) => {
+    const id = idSchema.parse(idValue), kind = z.enum(['mp4', 'srt', 'ass', 'publish']).parse(kindValue);
+    const options = exportOptions.parse(optionsValue), draft = options?.draft;
+    if ((kind === 'publish') !== Boolean(draft)) throw new Error('请选择有效的发布包设置');
     if (locks.has(id) || exports.size) throw new Error('口播工程已有导出或更新任务');
     locks.add(id);
     try {
-      const project = await store.read(id);
-      const result = await dialog.showSaveDialog({ title: `导出口播 ${kind.toUpperCase()}`,
-        defaultPath: `口播精剪.${kind}`, filters: [{ name: kind.toUpperCase(), extensions: [kind] }] });
-      if (result.canceled || !result.filePath) { locks.delete(id); return null; }
-      const outputPath = result.filePath;
-      if (path.extname(outputPath).toLowerCase() !== `.${kind}`) throw new Error(`请使用 .${kind} 扩展名`);
-      const relative = path.relative(store.root, path.resolve(outputPath));
-      if ((!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)) ||
-        sameFile(outputPath, project.source.originalPath) || deps.library.list(10000).some(asset => sameFile(outputPath, asset.filePath)))
-        throw new Error('导出路径不能覆盖原片、素材或工程文件');
+      const original = await store.read(id);
+      if (options && options.revision !== original.revision) throw new Error('口播工程已更新，请重新导出');
+      const highlights = options?.highlightId ? await store.readHighlights(id) : undefined;
+      const clip = highlights?.items.find(item => item.id === options?.highlightId);
+      if (options?.highlightId && !clip) throw new Error('精彩片段已移除');
+      const project = clip ? highlightProject(original, clip) : original;
+      let destination: string;
+      if (draft) {
+        const result = await dialog.showOpenDialog({ title: '选择发布包保存位置', properties: ['openDirectory', 'createDirectory'] });
+        if (result.canceled || !result.filePaths[0]) { locks.delete(id); return null; }
+        destination = await publishDestination(result.filePaths[0], deps.userData);
+      } else {
+        const result = await dialog.showSaveDialog({ title: `导出口播 ${kind.toUpperCase()}`,
+          defaultPath: `${clip ? '口播片段' : '口播精剪'}.${kind}`, filters: [{ name: kind.toUpperCase(), extensions: [kind] }] });
+        if (result.canceled || !result.filePath) { locks.delete(id); return null; }
+        destination = result.filePath;
+        if (path.extname(destination).toLowerCase() !== `.${kind}`) throw new Error(`请使用 .${kind} 扩展名`);
+        const relative = path.relative(store.root, path.resolve(destination));
+        if ((!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)) ||
+          sameFile(destination, original.source.originalPath) || deps.library.list(10000).some(asset => sameFile(destination, asset.filePath))) {
+          throw new Error('导出路径不能覆盖原片、素材或工程文件');
+        }
+      }
+      if (clip && highlights && !clip.confirmed) {
+        await store.saveHighlights(id, { ...highlights, items: highlights.items.map(item => item.id === clip.id ? { ...item, confirmed: true } : item) });
+      }
       const jobId = randomUUID(), controller = new AbortController();
-      const renderer = new HyperframesPreviewRenderer(undefined, deps.rendererTools());
+      const renderTools = deps.rendererTools(), renderer = new HyperframesPreviewRenderer(undefined, renderTools);
       exports.set(jobId, { controller, renderer });
       const emit = (value: Omit<TalkExportProgress, 'jobId'>) => send(event.sender, 'talk:export-progress', { ...value, jobId });
-      const temporary = path.join(path.dirname(outputPath), `.talk-${jobId}.${kind}`);
       const directory = store.directory(id), workspace = path.join(directory, 'exports', jobId);
       void (async () => {
-        let warnings: string[] = [];
+        let warnings: string[] = [], outputPath = destination;
         emit({ phase: 'preparing', progress: 0, message: '正在准备口播导出…' });
-        if (kind === 'mp4') {
-          const renderTools = deps.rendererTools();
+        if (kind === 'mp4' || draft) {
           if (!renderTools) throw new Error('导出 MP4 需要离线渲染浏览器及 FFmpeg');
           await access(renderTools.chromePath);
-          const rendering = await resolveTalkAssets(project, assetId => deps.library.byId(assetId));
-          warnings = rendering.warnings;
-          const audio = await prepareTalkAudio(rendering.project, directory, tools(), assetId => rendering.resolve(assetId).filePath, controller.signal);
-          const composition = await compileTalkTemplate(rendering.project, directory, workspace, audio, rendering.resolve);
-          controller.signal.throwIfAborted();
-          // render() does async tool checks before registering its own cancel controller.
-          // Retry cancellation until it has entered rendering, without changing the legacy renderer.
-          const cancellation = setInterval(() => {
-            if (controller.signal.aborted) void renderer.cancel(jobId);
-          }, 50);
-          try {
-            await renderer.render({ jobId, composition, outputPath }, progress => {
-              if (progress.phase !== 'complete') emit(progress);
-            });
-          } finally { clearInterval(cancellation); }
+          const render = async (file: string) => {
+            const rendering = await resolveTalkAssets(project, assetId => deps.library.byId(assetId));
+            warnings = rendering.warnings;
+            const audio = await prepareTalkAudio(rendering.project, directory, tools(), assetId => rendering.resolve(assetId).filePath, controller.signal);
+            const composition = await compileTalkTemplate(rendering.project, directory, workspace, audio, rendering.resolve);
+            controller.signal.throwIfAborted();
+            const cancellation = setInterval(() => { if (controller.signal.aborted) void renderer.cancel(jobId); }, 50);
+            try {
+              await renderer.render({ jobId, composition, outputPath: file }, progress => {
+                if (progress.phase !== 'complete') emit(progress);
+              });
+            } finally { clearInterval(cancellation); }
+          };
+          if (draft) {
+            const video = await cachedPublishVideo(path.join(directory, 'publish-video'),
+              [original.revision, clip?.startMs, clip?.endMs], render);
+            emit({ phase: 'encoding', progress: .98, message: '正在制作封面并打包…' });
+            const bundle = await writePublishBundle(destination, video, draft, renderTools, controller.signal);
+            outputPath = bundle.outputPath;
+            warnings = [bundle.summary, ...warnings];
+          } else await render(outputPath);
         } else {
-          await writeFile(temporary, kind === 'srt' ? talkSrt(project) : talkAss(project));
-          controller.signal.throwIfAborted();
-          await rename(temporary, outputPath);
+          const subtitle = path.join(path.dirname(outputPath), `.talk-${jobId}.${kind}`);
+          try {
+            await writeFile(subtitle, kind === 'srt' ? talkSrt(project) : talkAss(project));
+            controller.signal.throwIfAborted();
+            await rename(subtitle, outputPath);
+          } finally { await rm(subtitle, { force: true }); }
         }
         deps.allowOutput(outputPath);
-        emit({ phase: 'complete', progress: 1, message: [`${kind.toUpperCase()} 已导出`, ...warnings].join('。'), outputPath });
+        emit({ phase: 'complete', progress: 1, message: [draft ? '发布包已导出' : `${kind.toUpperCase()} 已导出`, ...warnings].join('。'), outputPath });
       })().catch(error => emit({ phase: controller.signal.aborted ? 'cancelled' : 'error', progress: 0,
         message: controller.signal.aborted ? '口播导出已取消' : error instanceof Error ? error.message : String(error) }))
         .finally(async () => {
-          await Promise.allSettled([rm(temporary, { force: true }), rm(workspace, { recursive: true, force: true })]);
+          await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
           exports.delete(jobId); locks.delete(id);
         });
       return { jobId };

@@ -6,7 +6,8 @@ import puppeteer from 'puppeteer';
 import { updateTalkProject } from '../dist-electron/electron/talking-head/editing.js';
 import { prepareTalkAudio, prepareTalkVoiceAudition } from '../dist-electron/electron/talking-head/media.js';
 import { compileTalkTemplate } from '../dist-electron/electron/talking-head/compiler.js';
-import { TalkProjectSchema } from '../dist-electron/shared/talking-head.js';
+import { TalkProjectSchema, talkCanvas } from '../dist-electron/shared/talking-head.js';
+import { editTalkHighlight } from '../dist-electron/electron/talking-head/highlights.js';
 
 const base = process.env.VOXWEAVE_UI_URL || 'http://127.0.0.1:5178';
 const root = path.resolve('.windows-smoke/talking-head');
@@ -21,7 +22,7 @@ async function prepare() {
   const audio = await prepareTalkAudio(project, directory, tools, () => { throw new Error('No BGM'); });
   const prepared = await compileTalkTemplate(project, directory, workspace, audio, () => { throw new Error('No assets'); });
   return { project, preview: { entryUrl: `${base}/${relative}/index.html`, sourceUrl: `${base}/${relative}/assets/source.mp4`,
-    durationMs: prepared.durationMs, width: project.source.width, height: project.source.height } };
+    durationMs: prepared.durationMs, ...talkCanvas(project) } };
 }
 const initial = await prepare();
 const browser = await puppeteer.launch({ executablePath: process.env.VOXWEAVE_CHROME,
@@ -40,6 +41,19 @@ try {
     const samples = await prepareTalkVoiceAudition(project, directory, tools.ffmpegPath, request);
     return { original: Buffer.from(samples.original).toString('base64'), enhanced: Buffer.from(samples.enhanced).toString('base64') };
   });
+  const edits = [], exports = [];
+  await page.exposeFunction('__saveHighlight', async (id, revision, edit) => {
+    assert.equal(id, project.id);
+    assert.equal(revision, project.revision);
+    const clip = editTalkHighlight(project, edits.find(item => item.id === edit.id), edit);
+    edits.splice(0, edits.length, clip);
+    return { version: 1, goal: '', items: edits };
+  });
+  await page.exposeFunction('__exportTalk', async (id, kind, options) => {
+    assert.equal(id, project.id);
+    exports.push({ kind, options });
+    return null;
+  });
   await page.evaluateOnNewDocument(initial => {
     window.__ttsCalls = 0;
     const forbidden = async () => { window.__ttsCalls++; throw new Error('TTS must not be invoked'); };
@@ -54,6 +68,10 @@ try {
         resume: async () => initial,
         onProgress: () => () => {}, onExportProgress: () => () => {},
         update: (id, change) => window.__talkUpdate(id, change),
+        highlights: async () => ({ version: 1, goal: '', items: [] }),
+        findHighlights: async () => ({ version: 1, goal: '', items: [] }),
+        saveHighlight: (id, revision, edit) => window.__saveHighlight(id, revision, edit),
+        export: (id, kind, options) => window.__exportTalk(id, kind, options),
         auditionVoice: async (id, request) => {
           const samples = await window.__talkAudition(id, request);
           return { original: Uint8Array.fromBase64(samples.original).buffer, enhanced: Uint8Array.fromBase64(samples.enhanced).buffer };
@@ -141,10 +159,31 @@ try {
   assert.ok(await page.$('.script-field textarea'));
   await page.click('.workflow-nav button:nth-of-type(2)');
   assert.equal(await page.$eval('textarea[aria-label="图解文字"]', element => element.value), '原声驱动\n字幕随行');
+  await page.click('.talk-framing > summary');
+  await page.select('.talk-framing select', '9:16');
+  await clickButton('应用画幅与取景');
+  await page.waitForFunction(() => document.querySelector('.talk-metadata')?.textContent.includes('1080 × 1920'));
+  assert.equal(project.framing.aspect, '9:16');
+  await clickButton('精彩片段');
+  await clickButton('提取精彩片段');
+  await page.waitForFunction(() => document.querySelector('.talk-highlights .talk-notice')?.textContent.includes('没有新的'));
+  await clickButton('手动添加');
+  await page.type('.highlight-edit input:not([type=number])', '测试发布片段');
+  await clickButton('保存片段');
+  await page.waitForSelector('.highlight-card');
+  await clickButton('试听原片');
+  await page.waitForSelector('.talk-dialog video');
+  await page.click('button[aria-label="关闭原片试听"]');
+  await page.click('.highlight-card .publish-panel summary');
+  await page.select('.highlight-card .publish-panel select', 'xiaohongshu');
+  await clickButton('保存 MP4、封面和文案');
+  assert.equal(exports[0]?.options.highlightId, edits[0].id);
+  assert.equal(exports[0]?.options.draft.platform, 'xiaohongshu');
+  assert.equal(exports[0]?.kind, 'publish');
   assert.equal(await page.evaluate(() => window.__ttsCalls), 0);
   assert.deepEqual(errors, []);
   await page.setViewport({ width: 800, height: 1000 });
   await page.screenshot({ path: path.join(root, 'ui-narrow.png') });
-  await writeFile(path.join(root, 'ui-report.json'), JSON.stringify({ ok: true, calls, ttsCalls: 0, errors }, null, 2));
-  process.stdout.write('Talking-head UI smoke passed: voice audition and presets, correction, reveal, restore, source audition, graphic, mode isolation, no TTS.\n');
+  await writeFile(path.join(root, 'ui-report.json'), JSON.stringify({ ok: true, calls, exports, ttsCalls: 0, errors }, null, 2));
+  process.stdout.write('Talking-head UI smoke passed: voice audition, corrections, graphics, portrait framing, clip review, publish bundle request, no TTS.\n');
 } finally { await browser.close(); }

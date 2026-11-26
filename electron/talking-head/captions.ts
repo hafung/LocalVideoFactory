@@ -1,7 +1,7 @@
 import { alignTextTokens } from '../alignment/align-text.js';
 import { segmentCaptionText } from '../composition/segmenter.js';
 import { groupCaptionWords, type TimedCaptionWord } from '../../shared/caption-highlights.js';
-import { talkTimeline, type TalkProject, type TalkCaptionSettings } from '../../shared/talking-head.js';
+import { talkCanvas, talkCaptionMargins, talkTimeline, type TalkProject, type TalkCaptionSettings } from '../../shared/talking-head.js';
 
 export interface TalkCaptionUnit { startChar: number; endChar: number; startMs: number; endMs: number }
 export interface TalkOutputCue { id: string; text: string; startMs: number; endMs: number;
@@ -98,9 +98,11 @@ export function talkSrt(project: TalkProject): string {
 }
 const assEscape = (value: string) => value.replace(/\\/gu, '＼').replace(/\{/gu, '｛').replace(/\}/gu, '｝').replace(/\r?\n/gu, '\\N');
 export function talkAss(project: TalkProject): string {
-  const { width, height } = project.source, portrait = height > width;
+  const { width, height } = talkCanvas(project), portrait = height > width;
+  const margin = talkCaptionMargins(width, height);
+  const verticalMargin = project.captions.position === 'top' ? margin.top : margin.bottom;
   const size = Math.round(width * (portrait ? .055 : .036));
-  const header = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${width}\nPlayResY: ${height}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Microsoft YaHei,${size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,2,${project.captions.position === 'top' ? 8 : 2},${Math.round(width * .07)},${Math.round(width * .07)},${Math.round(height * .1)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+  const header = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${width}\nPlayResY: ${height}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Microsoft YaHei,${size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,2,${project.captions.position === 'top' ? 8 : 2},${Math.round(width * margin.left / 100)},${Math.round(width * margin.right / 100)},${Math.round(height * verticalMargin / 100)},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
   if (!project.captions.enabled) return header;
   return header + talkOutputCaptions(project).flatMap(cue => talkCaptionStates(cue, project.captions).flatMap(state => {
     if (Math.round(state.endMs / 10) <= Math.round(state.startMs / 10) || state.visibleEnd === 0) return [];

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>帧舟成片演示</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#10151b;color:#eef3ef}
+    body{max-width:56rem;margin:0 auto;padding:2rem 1rem}header{display:flex;align-items:center;gap:1rem;margin-bottom:2rem}
+    h1,h2{margin:0}header img{width:3rem;height:3rem}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(18rem,100%),1fr));gap:1.25rem}
+    article{padding:1rem;background:#171e26;border:1px solid #32404b;border-radius:1rem}p{line-height:1.6;color:#bac8ce}
+    video{display:block;width:100%;aspect-ratio:9/16;max-height:64vh;background:#10151b;border-radius:.55rem}
+    nav{display:flex;flex-wrap:wrap;gap:1rem;margin-top:1rem}a{color:#d9ff69;text-underline-offset:.22em}
+  </style>
+</head>
+<body>
+  <header><img src="../../build/icon.png" alt=""><h1>帧舟成片演示</h1></header>
+  <main>
+    <article>
+      <h2>文案成片</h2>
+      <p>输入文案，在本机生成旁白和字幕，再换一个分镜画面。</p>
+      <video controls playsinline preload="metadata" poster="frameskiff-script.jpg" aria-label="文案成片样片">
+        <source src="frameskiff-script.mp4" type="video/mp4">
+      </video>
+      <nav aria-label="文案成片素材"><a href="frameskiff-script.txt">输入文案</a><a href="frameskiff-script.jpg" download>下载封面</a><a href="frameskiff-script-post.txt">发布文案</a></nav>
+    </article>
+    <article>
+      <h2>口播精剪前后对照</h2>
+      <p>同一段合成原声，缩短长停顿并加入字幕和提示卡。</p>
+      <video controls playsinline preload="metadata" poster="frameskiff-talk.jpg" aria-label="口播精剪对照样片">
+        <source src="frameskiff-talk.mp4" type="video/mp4">
+      </video>
+      <nav aria-label="口播精剪素材"><a href="frameskiff-talk-source.mp4" download>下载原片</a><a href="frameskiff-talk.jpg" download>下载封面</a><a href="frameskiff-talk-post.txt">发布文案</a></nav>
+    </article>
+  </main>
+</body>
+</html>

@@ -80,6 +80,7 @@ export function updateTalkProject(input: TalkProject, update: TalkUpdate): TalkP
   }
   if (change.captions) project.captions = change.captions;
   if (change.audio) project.audio = change.audio;
+  if (change.framing) project.framing = change.framing;
   const edited = new Set<string>();
   for (const edit of change.edits ?? []) {
     if (edited.has(edit.cueId)) throw new Error('同一字幕不能重复修改');

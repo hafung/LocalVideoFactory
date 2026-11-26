@@ -45,6 +45,8 @@ import { analyzeSourceContent, matchSourceContent, SOURCE_CONTENT_VERSION, type 
 import { alignWithSenseVoiceProcess } from './alignment/sensevoice-process.js';
 import { registerTalkingHead } from './talking-head/ipc.js';
 import { streamTalkSource } from './talking-head/source-stream.js';
+import { cachedPublishVideo, publishDestination, suggestPublishCopy, writePublishBundle } from './publishing.js';
+import { PublishCopyRequestSchema, PublishDraftSchema } from '../shared/publishing.js';
 import { LANGUAGES, type AudioFormat, type CompositionProgressEvent, type GenerateCompositionRequest, type SynthesisRequest, type VoiceProfile } from '../shared/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,7 +70,8 @@ const compositionJobs = new Map<string, { controller: AbortController; engine: Q
 const previews = new PreviewRegistry();
 const allowedShellPaths = new Set<string>();
 const projectLocks = new Set<string>();
-const exportJobs = new Map<string, { renderer: HyperframesPreviewRenderer; cancelled: boolean }>();
+const exportJobs = new Map<string, { renderer: HyperframesPreviewRenderer; controller: AbortController }>();
+let publishDraftJob: AbortController | undefined;
 let modelDownloader: ModelDownloader | undefined;
 let modelCatalog: string | undefined;
 const downloadableModels = new Set<OptionalModel>();
@@ -109,11 +112,12 @@ function requireModelsReady(): void {
 }
 let waitingToQuit = false;
 app.on('before-quit', event => {
+  publishDraftJob?.abort();
   if (!exportJobs.size) return;
   event.preventDefault();
   if (waitingToQuit) return;
   waitingToQuit = true;
-  for (const [id, job] of exportJobs) { job.cancelled = true; void job.renderer.cancel(id); }
+  for (const [id, job] of exportJobs) { job.controller.abort(); void job.renderer.cancel(id); }
   const timer = setInterval(() => {
     if (!exportJobs.size) { clearInterval(timer); app.quit(); }
   }, 100);
@@ -558,8 +562,20 @@ if (cliMode) {
       return paths.ffmpegPath && paths.ffprobePath ? { ffmpegPath: paths.ffmpegPath, ffprobePath: paths.ffprobePath,
         senseVoiceRoot: path.join(modelRoot(), 'models', 'sensevoice-small') } : undefined;
     },
-    rendererTools,
+    rendererTools, sceneModelPaths,
     allowOutput: file => allowedShellPaths.add(path.resolve(file))
+  });
+
+  ipcMain.handle('publishing:suggest-copy', async (_event, value: unknown) => {
+    const request = PublishCopyRequestSchema.parse(value);
+    if (publishDraftJob) throw new Error('发布文案正在起草，请稍候');
+    const paths = sceneModelPaths();
+    if (!paths.enginePath || !paths.modelPath) throw new Error('请在创作设置中启用本地分镜模型，或手动填写文案');
+    const controller = new AbortController();
+    const model = new LocalLlamaScenePlanner(() => paths);
+    publishDraftJob = controller;
+    try { return await suggestPublishCopy(request, (prompt, data) => model.json(prompt, data, controller.signal, undefined, 900)); }
+    finally { model.dispose(); publishDraftJob = undefined; }
   });
 
   ipcMain.handle('models:status', () => modelDownloader?.status ?? bundledModelStatus);
@@ -1009,14 +1025,21 @@ if (cliMode) {
       return result;
     } finally { projectLocks.delete(id); }
   });
-  ipcMain.handle('composition:export', async (event, idValue: unknown) => {
-    const id = projectIdSchema.parse(idValue);
+  ipcMain.handle('composition:export', async (event, idValue: unknown, draftValue: unknown) => {
+    const id = projectIdSchema.parse(idValue), draft = PublishDraftSchema.optional().parse(draftValue);
     if (projectLocks.has(id) || exportJobs.size) throw new Error('已有导出或工程更新任务，请稍后再试');
     projectLocks.add(id);
     try {
       const plan = await editPlans.read(id);
       if (!['resolved', 'complete'].includes(plan.status)) throw new Error('请先生成可播放预览');
-      const result = process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT && process.env.VOXWEAVE_EXPORT_SMOKE_OUTPUT
+      let bundleParent: string | undefined;
+      if (draft) {
+        const choice = await dialog.showOpenDialog({ title: '选择发布包保存位置', properties: ['openDirectory', 'createDirectory'] });
+        if (choice.canceled || !choice.filePaths[0]) { projectLocks.delete(id); return null; }
+        bundleParent = await publishDestination(choice.filePaths[0], app.getPath('userData'));
+      }
+      const result = bundleParent ? { canceled: false, filePath: bundleParent }
+        : process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT && process.env.VOXWEAVE_EXPORT_SMOKE_OUTPUT
         ? { canceled: false, filePath: process.env.VOXWEAVE_EXPORT_SMOKE_OUTPUT }
         : await dialog.showSaveDialog({ title: '导出 MP4', defaultPath: '帧舟成片.mp4', filters: [{ name: 'MP4 视频', extensions: ['mp4'] }] });
       if (result.canceled || !result.filePath) { projectLocks.delete(id); return null; }
@@ -1024,20 +1047,36 @@ if (cliMode) {
       const sourcePaths = [plan.narration.audioPath, plan.input.sourceVideoPath, ...library.list(10000).map(asset => asset.filePath)].filter(Boolean);
       if (sourcePaths.some(file => path.resolve(file!).toLowerCase() === path.resolve(outputPath).toLowerCase())) throw new Error('导出路径不能覆盖原始素材');
       const jobId = randomUUID(); const renderer = makeRenderer(plan);
-      const job = { renderer, cancelled: false }; exportJobs.set(jobId, job);
+      const controller = new AbortController();
+      exportJobs.set(jobId, { renderer, controller });
       const emit = (payload: Omit<import('../shared/types.js').ExportProgress, 'jobId'>) => {
         if (!event.sender.isDestroyed()) event.sender.send('composition:export-progress', { ...payload, jobId });
       };
+      const workspace = path.join(projectsRoot, id, 'exports', jobId);
+      async function render(renderPlan: EditPlan, file: string) {
+        const composition = await renderer.prepare(renderPlan, workspace);
+        controller.signal.throwIfAborted();
+        const cancellation = setInterval(() => { if (controller.signal.aborted) void renderer.cancel(jobId); }, 50);
+        try {
+          await renderer.render({ jobId, composition, outputPath: file }, progress => { if (progress.phase !== 'complete') emit(progress); });
+        } finally { clearInterval(cancellation); }
+      }
       void (async () => {
         emit({ phase: 'preparing', progress: 0, message: '正在准备画面、字幕和混音…' });
+        if (draft && bundleParent) {
+          const tools = rendererTools();
+          if (!tools) throw new Error('导出发布包需要离线渲染浏览器及 FFmpeg');
+          const video = await cachedPublishVideo(path.join(projectsRoot, id, 'publish-video'), plan.revision, file => render(plan, file));
+          emit({ phase: 'encoding', progress: .98, message: '正在制作封面并打包…' });
+          const bundle = await writePublishBundle(bundleParent, video, draft, tools, controller.signal);
+          allowedShellPaths.add(path.resolve(bundle.outputPath));
+          emit({ phase: 'complete', progress: 1, message: `发布包已导出 · ${bundle.summary}`, outputPath: bundle.outputPath });
+          return;
+        }
         const rendering = EditPlanSchema.parse({ ...plan, revision: plan.revision + 1, status: 'rendering', updatedAt: new Date().toISOString() });
         await editPlans.save(rendering);
         try {
-          const prepared = await renderer.prepare(rendering, path.join(projectsRoot, id, 'exports', jobId));
-          if (job.cancelled) throw new Error('导出已取消');
-          await renderer.render({ jobId, composition: prepared, outputPath }, progress => {
-            if (progress.phase !== 'complete') emit(progress);
-          });
+          await render(rendering, outputPath);
           await editPlans.save(EditPlanSchema.parse({ ...rendering, revision: rendering.revision + 1, status: 'complete',
             updatedAt: new Date().toISOString(), output: { ...plan.output, outputPath } }));
           allowedShellPaths.add(path.resolve(outputPath));
@@ -1046,8 +1085,12 @@ if (cliMode) {
           await editPlans.save(EditPlanSchema.parse({ ...plan, revision: rendering.revision + 1, status: 'resolved', updatedAt: new Date().toISOString() }));
           throw error;
         }
-      })().catch(error => emit({ phase: job.cancelled ? 'cancelled' : 'error', progress: 0, message: error instanceof Error ? error.message : String(error) }))
-        .finally(() => { exportJobs.delete(jobId); projectLocks.delete(id); });
+      })().catch(error => emit({ phase: controller.signal.aborted ? 'cancelled' : 'error', progress: 0,
+        message: controller.signal.aborted ? '导出已取消' : error instanceof Error ? error.message : String(error) }))
+        .finally(async () => {
+          await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
+          exportJobs.delete(jobId); projectLocks.delete(id);
+        });
       return { jobId };
     } catch (error) { projectLocks.delete(id); throw error; }
   });
@@ -1096,7 +1139,7 @@ if (cliMode) {
   });
   ipcMain.handle('composition:cancel-export', async (_event, value: unknown) => {
     const id = z.string().uuid().parse(value); const job = exportJobs.get(id);
-    if (job) { job.cancelled = true; await job.renderer.cancel(id); }
+    if (job) { job.controller.abort(); await job.renderer.cancel(id); }
   });
   ipcMain.handle('engine:synthesize', async (event, request: SynthesisRequest) => {
     requireModelsReady();

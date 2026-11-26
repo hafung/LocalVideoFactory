@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { mkdir, copyFile, link, access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { talkTimeline, talkDuration, type TalkProject, type TalkOverlay } from '../../shared/talking-head.js';
+import { defaultTalkFraming, talkCanvas, talkCaptionMargins, talkTimeline, talkDuration, type TalkProject, type TalkOverlay } from '../../shared/talking-head.js';
 import { talkCaptionStates, talkOutputCaptions } from './captions.js';
 import { escapeHtml } from '../renderers/template-compiler.js';
 import type { PreparedComposition } from '../renderers/renderer.js';
@@ -80,14 +80,17 @@ export async function compileTalkTemplate(project: TalkProject, directory: strin
     }).join('');
     return `<div class="caption ${project.captions.position} effect-${project.captions.highlight}" id="caption-${escapeHtml(cue.id)}-${index}" data-animate-start="${sec(state.startMs)}" data-animate-duration="${sec(state.endMs - state.startMs)}"><p>${text}</p></div>`;
   })).join('\n') : '';
-  const { width, height } = project.source;
+  const { width, height } = talkCanvas(project);
+  const framing = project.framing ?? defaultTalkFraming;
+  const crop = framing.aspect !== 'source' && framing.layout === 'crop';
+  const margin = talkCaptionMargins(width, height);
   const size = Math.round(width * (height > width ? .055 : .036));
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:">
 <style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#08090b}body{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:#fff}#stage{position:relative;width:${width}px;height:${height}px;overflow:hidden}
-.base{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}#overlay-layer,#caption-layer{position:absolute;inset:0;pointer-events:none}#overlay-layer{z-index:2}#caption-layer{z-index:3}.caption,.graphic{visibility:hidden;opacity:0}
-.caption{position:absolute;inset:0;display:flex;justify-content:center;align-items:flex-end;padding:0 7% 10%;font-size:${size}px;line-height:1.4;font-weight:800;text-align:center;text-shadow:0 2px 6px #000,0 0 12px #000}.caption.top{align-items:flex-start;padding:10% 7% 0}.caption p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.caption span{display:inline}.caption .unrevealed{visibility:hidden}.caption .active{color:#d9ff69}.effect-box .active{background:#253b2be6;border-radius:.15em;box-shadow:0 0 0 .08em #253b2be6}.effect-scale .active{display:inline-block;transform:scale(1.08)}
+.base{position:absolute;inset:0;width:100%;height:100%;object-fit:${crop ? 'cover' : 'contain'};object-position:${crop ? `${framing.x}% ${framing.y}%` : 'center'}}#overlay-layer,#caption-layer{position:absolute;inset:0;pointer-events:none}#overlay-layer{z-index:2}#caption-layer{z-index:3}.caption,.graphic{visibility:hidden;opacity:0}
+.caption{position:absolute;inset:0;display:flex;justify-content:center;align-items:flex-end;padding:0 ${margin.right}% ${margin.bottom}% ${margin.left}%;font-size:${size}px;line-height:1.4;font-weight:800;text-align:center;text-shadow:0 2px 6px #000,0 0 12px #000}.caption.top{align-items:flex-start;padding:${margin.top}% ${margin.right}% 0 ${margin.left}%}.caption p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.caption span{display:inline}.caption .unrevealed{visibility:hidden}.caption .active{color:#d9ff69}.effect-box .active{background:#253b2be6;border-radius:.15em;box-shadow:0 0 0 .08em #253b2be6}.effect-scale .active{display:inline-block;transform:scale(1.08)}
 .media-overlay,.graphic{position:absolute}.media-overlay{object-fit:contain;background:#101113}.cover{inset:0;width:100%;height:100%}.pip{top:15%;width:40%;height:30%;border-radius:${Math.round(width * .015)}px;overflow:hidden;box-shadow:0 8px 32px #0005}.top-right.pip{right:5%}.top-left.pip{left:5%}.graphic{display:grid;place-items:center;padding:5%;text-align:center}.graphic p{position:relative;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:${Math.round(width * .037)}px;line-height:1.5;font-weight:750}.graphic.cover p{max-width:78%;font-size:${Math.round(width * .055)}px}.callout{background:#141c20ed;color:#d9ff69;border:2px solid #d9ff6960}.whiteboard{background:#fff9ed;color:#26302a}.sketch{position:absolute;inset:5%;width:90%;height:90%;fill:none;stroke:#345c42;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.whiteboard p{padding-bottom:8%}
 </style><script src="./gsap.min.js"></script><script>window.__timelines={};</script></head><body>
 <main id="stage" data-composition-id="talk-root" data-start="0" data-duration="${sec(durationMs)}" data-width="${width}" data-height="${height}">

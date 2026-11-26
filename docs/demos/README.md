@@ -1,9 +1,12 @@
-# 成片演示
+# 帧舟成片演示
 
-- `LocalVideoFactory_BrandFilm_16x9.mp4`：项目作者提供的品牌宣传片，中英文 README 的主展示视频。时长 31 秒，1920 × 1080（16:9），H.264 视频与 AAC 音频，约 6.4 MB。原文件未重新编码。
-- `funny-demo.mp4`：项目作者提供的真实成片，由 LocalVideoFactory 制作。原文件来自仓库根目录的 `funny_demo.mp4`，移动时未重新编码。时长 4.5 秒，1080 × 1920，H.264 视频与 AAC 音频，约 4.2 MB。
-- `funny-demo.gif`：从完整 MP4 生成的无声预览，360 × 640、10 fps，作为不支持视频播放时的备选。声音请以 MP4 为准。
+下载仓库后，打开 [样片播放器](index.html) 即可播放两条有声竖屏样片。每条附带应用发布包生成的封面和可复制文案。
 
-中英文 README 使用品牌宣传片的 [GitHub 视频附件](https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac)，可在 GitHub 页面内播放声音，并提供仓库内的原始 MP4 下载链接。项目介绍文章继续使用搞笑短片的 [GitHub 视频附件](https://github.com/user-attachments/assets/1e107cb7-7619-463a-9472-8045865387c5)。
+| 样片 | 输出 | 输入与实际操作 |
+| --- | --- | --- |
+| 文案成片 | [MP4 · 39 秒](frameskiff-script.mp4?raw=true) · [封面](frameskiff-script.jpg) · [文案](frameskiff-script-post.txt) | 用[演示文案](frameskiff-script.txt)在本机生成旁白和字幕，以帧舟界面截图为分镜素材，其中一处换成字幕编辑画面。 |
+| 口播精剪前后对照 | [MP4 · 18 秒](frameskiff-talk.mp4?raw=true) · [封面](frameskiff-talk.jpg) · [文案](frameskiff-talk-post.txt) | 用[同一段演示原片](frameskiff-talk-source.mp4?raw=true)对比剪辑前后。原声使用本地合成语音，句间加入长停顿以展示处理效果。从 10.10 秒缩短到约 8.12 秒，并添加了字幕和人工设置的提示卡。 |
 
-播放器使用单独成段的附件地址，普通仓库 MP4 路径不能替代附件地址。参见 [GitHub 附件文档](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files)。
+在桌面应用中可以分别粘贴演示文案和导入口播原片，体验两个工作流。要复现发布包和样片，先准备仓库的 Windows 本地模型与渲染资源，在 Windows 安装依赖并运行 `pnpm build`，再执行 `node scripts/build-publishing-demos.mjs`。脚本使用 `.windows-smoke/publishing-demos` 作为工作目录，把两套发布产物写到本目录。 [构建和模型准备](../building.md)
+
+早期项目介绍中的[品牌宣传片](LocalVideoFactory_BrandFilm_16x9.mp4?raw=true)与[搞笑短片](funny-demo.mp4?raw=true)仍可下载。 [早期短片动图](funny-demo.gif)
