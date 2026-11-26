@@ -1,6 +1,8 @@
 import puppeteer from 'puppeteer';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
+const uiUrl = process.env.VOXWEAVE_UI_URL || 'http://127.0.0.1:5178';
 const browser = await puppeteer.launch({ executablePath: process.env.VOXWEAVE_CHROME,
   headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 try {
@@ -20,8 +22,47 @@ try {
     });
     assert.deepEqual(row, { formats: 5, oneRow: true, fits: true });
   }
-  await page.evaluateOnNewDocument(() => {
-    const thumbnailUrl = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  async function checkThumbnailGrid(columns) {
+    await page.waitForFunction(() => {
+      const images = [...document.querySelectorAll('.scene-picker-grid img')].slice(0, 2);
+      return images.length === 2 && images.every(image => image.complete && image.naturalWidth >= 720);
+    });
+    const layout = await page.$eval('.scene-picker-grid', (grid, columns) => {
+      const cards = [...grid.querySelectorAll('.scene-picker-card')].slice(0, columns + 1);
+      const positions = cards.map(card => card.getBoundingClientRect());
+      const body = grid.closest('.scene-picker-body');
+      return {
+        horizontalOverflow: body.scrollWidth - body.clientWidth,
+        alignedRows: positions.slice(0, columns).every(card => card.top === positions[0].top) &&
+          positions[columns].top > positions[0].bottom,
+        thumbnailsFit: cards.slice(0, 2).every((card, index) => {
+          const frame = card.querySelector('.scene-picker-thumb').getBoundingClientRect();
+          const image = card.querySelector('img').getBoundingClientRect();
+          return Math.abs(frame.width - (positions[index].width - 2)) < 1 &&
+            Math.abs(frame.width * 9 / 16 - frame.height) < 1 &&
+            Math.abs(frame.width - image.width) < 1 && Math.abs(frame.height - image.height) < 1 &&
+            frame.left === image.left && frame.top === image.top;
+        })
+      };
+    }, columns);
+    assert.deepEqual(layout, { horizontalOverflow: 0, alignedRows: true, thumbnailsFit: true });
+  }
+  const [landscape, portrait] = await Promise.all([
+    readFile(new URL('../docs/screenshots/music.png', import.meta.url)),
+    readFile(new URL('../docs/demos/frameskiff-script.jpg', import.meta.url))
+  ]);
+  const fixtures = new Map([
+    [new URL('/__smoke__/landscape.png', uiUrl).href, { contentType: 'image/png', body: landscape }],
+    [new URL('/__smoke__/portrait.jpg', uiUrl).href, { contentType: 'image/jpeg', body: portrait }]
+  ]);
+  await page.setRequestInterception(true);
+  page.on('request', request => {
+    const fixture = fixtures.get(request.url());
+    return fixture ? request.respond(fixture) : request.continue();
+  });
+  await page.evaluateOnNewDocument(thumbnails => {
+    if (window.top !== window) return;
+    window.__thumbnails = thumbnails;
     const scene = (id, startMs, endMs, script) => ({ id, startMs, endMs, script, visual: {
       type: 'kinetic-text', intent: { keywords: ['城市'], orientation: 'landscape', preferredTypes: ['video', 'image'] }
     } });
@@ -45,7 +86,7 @@ try {
         return {
           query: args[2] || '城市夜景', querySource: args[2] ? 'manual' : 'story',
           candidates: Array.from({ length: 18 }, (_, index) => ({
-            asset: { id: `local-${index}`, name: `本地画面 ${index + 1}`, type: 'image' },
+            asset: { id: `local-${index}`, name: `本地画面 ${index + 1}`, type: index === 0 ? 'video' : 'image', thumbnailPath: 'fixture.png' },
             choice: { type: 'asset', assetId: `local-${index}`, throughSceneId: args[3] }
           }))
         };
@@ -53,7 +94,7 @@ try {
       pexelsStatus: async () => ({ configured: true }),
       searchPexels: async request => { window.__calls.push({ search: request });
         const item = (id, type, durationMs) => ({ id, type, durationMs, name: id,
-          thumbnailUrl, sourceUrl: 'https://www.pexels.com/video/1/', author: 'Creator', width: 1920, height: 1080 });
+          thumbnailUrl: thumbnails[type === 'video' ? 0 : 1], sourceUrl: 'https://www.pexels.com/video/1/', author: 'Creator', width: 1920, height: 1080 });
         return { query: 'city night', items: request.type === 'video'
           ? [item('short', 'video', 2000), item('long', 'video', 6000)]
           : Array.from({ length: 18 }, (_, index) => item(`photo-${index}`, 'image')) }; },
@@ -69,14 +110,20 @@ try {
       },
       openSource: async () => {}
     };
-  });
-  await page.goto(process.env.VOXWEAVE_UI_URL || 'http://127.0.0.1:5178');
+  }, [...fixtures.keys()]);
+  await page.goto(uiUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.scene-card');
   await page.click('.scene-card button');
   await page.waitForSelector('.scene-picker-card');
   assert.equal(await page.$eval('.scene-picker-current', line => line.textContent), '你好。');
   assert.match(await page.$eval('.scene-picker-extend', button => button.textContent), /延长当前分镜画面到下一句.*城市夜景。/u);
   assert.match(await page.$eval('.scene-picker-secondary', button => button.textContent), /仅用文字做画面/u);
+
+  // Chromium has no Electron library protocol, so load the fixture in the same image elements.
+  await page.$$eval('.scene-picker-local .scene-picker-thumb img', images => {
+    images.forEach((image, index) => { image.src = window.__thumbnails[index % 2]; });
+  });
+  await checkThumbnailGrid(2);
 
   await page.click('.scene-picker-local .scene-picker-card:nth-child(2)');
   assert.equal(await page.$eval('.scene-picker-summary b', name => name.textContent), '本地画面 2');
@@ -95,6 +142,7 @@ try {
   await page.focus('[data-source="local"]');
   await page.keyboard.press('ArrowRight');
   await page.waitForSelector('.scene-picker-online-card');
+  await checkThumbnailGrid(3);
   assert.equal(await page.$eval('[data-source="online"]', tab => tab.getAttribute('aria-selected')), 'true');
   const list = '.scene-picker-online';
   const short = `${list} .scene-picker-online-card:last-child .scene-picker-card`;
@@ -123,6 +171,7 @@ try {
   await page.click(first);
   assert.equal(await page.$eval(first, button => button.getAttribute('aria-pressed')), 'true');
   await page.setViewport({ width: 390, height: 640 });
+  await checkThumbnailGrid(2);
   const inset = await page.$eval('.scene-picker', element => {
     const { left, right } = element.getBoundingClientRect();
     return { left, right: window.innerWidth - right };

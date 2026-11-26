@@ -40,7 +40,8 @@
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: #5b5e54 transparent;
   scrollbar-width: thin;
@@ -198,6 +199,7 @@
 .scene-picker-grid.scene-picker-online { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .scene-picker-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
   min-width: 0;
   padding: 0;
@@ -224,7 +226,13 @@
   background: #242820;
   color: #a5ad98;
 }
-.scene-picker-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.scene-picker-thumb > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .scene-picker-thumb > span {
   position: absolute;
   bottom: 7px;
