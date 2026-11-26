@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $packageRoot = [IO.Path]::GetFullPath($PackageDir)
 $result = if ($ResultPath) { [IO.Path]::GetFullPath($ResultPath) } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.windows-smoke\packaged-composition-smoke.json")) }
 $executable = Get-ChildItem -LiteralPath $packageRoot -Filter "*.exe" -File | Select-Object -First 1 -ExpandProperty FullName
-if (-not $executable) { throw "Packaged VoxWeave executable was not found in: $packageRoot" }
+if (-not $executable) { throw "Packaged FrameSkiff executable was not found in: $packageRoot" }
 
 $screenshot = [IO.Path]::ChangeExtension($result, ".png")
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $result) | Out-Null
@@ -21,7 +21,7 @@ $env:VOXWEAVE_TEST_USER_DATA = Join-Path (Split-Path -Parent $result) ('packaged
 if ($WithExport) { $env:VOXWEAVE_EXPORT_SMOKE_OUTPUT = [IO.Path]::ChangeExtension($result, '.mp4') }
 try {
   $process = Start-Process -FilePath $executable -PassThru -Wait
-  if ($process.ExitCode -ne 0) { throw "Packaged VoxWeave exited with code $($process.ExitCode)." }
+  if ($process.ExitCode -ne 0) { throw "Packaged FrameSkiff exited with code $($process.ExitCode)." }
   if (-not (Test-Path -LiteralPath $result -PathType Leaf)) { throw "Packaged composition smoke did not write its result." }
   $data = Get-Content -LiteralPath $result -Raw -Encoding UTF8 | ConvertFrom-Json
   if (-not $data.ok -or $data.status -ne "resolved" -or -not $data.playerReadyAfterPlayback -or $data.playerScenes -le 0 -or $data.previewNonDarkPixelRatio -le 0.001) {

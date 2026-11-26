@@ -21,4 +21,12 @@ it('builds a validated catalog from pinned models with one shared codec and pres
   }
   expect(catalog.archives[0].files.map(file => file.path)).toContain('models/sensevoice-small/model.int8.onnx');
   expect(catalog.files.map(file => file.path)).toContain('semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf');
+  const scene = JSON.parse(await readFile('resources/scene-planner/manifest.json', 'utf8'));
+  for (const file of [scene.modelFile, scene.projectorFile]) {
+    expect(catalog.files.find(item => item.path === `scene-planner/${file}`)).toMatchObject({
+      sha256: scene.files.find(item => item.path === file).sha256,
+      url: `${scene.quantizationSource}/resolve/${scene.revision}/${path.posix.basename(file)}?download=true`
+    });
+  }
+  expect(catalog.manifests.find(item => item.path === 'scene-planner/manifest.json')?.data).toEqual(scene);
 });

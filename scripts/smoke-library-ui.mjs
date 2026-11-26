@@ -58,5 +58,19 @@ try {
   await page.keyboard.press('Escape');
   assert.equal(await page.$('[role=dialog]'), null);
   assert.equal(await page.evaluate(() => document.activeElement?.className), 'library-button');
-  console.log('UI smoke passed: local search/tags, Pexels search/download mocks, responsive layout, Escape/focus restoration.');
+  assert.ok(await page.$eval('.workspace-header', header => {
+    const mode = header.querySelector('.workflow-nav').getBoundingClientRect();
+    const actions = header.querySelector('.workspace-actions').getBoundingClientRect();
+    return actions.left >= mode.right && actions.right <= innerWidth;
+  }));
+  await page.click('.workflow-nav button:nth-child(2)');
+  await page.waitForSelector('.talk-app', { visible: true });
+  assert.equal(await page.$$eval('.library-button', buttons => buttons.length), 1);
+  await page.click('.workspace-actions .icon-button');
+  await page.waitForSelector('.creation-settings', { visible: true });
+  await page.keyboard.press('Escape');
+  await page.click('.workspace-actions .library-button');
+  await page.waitForSelector('.asset-card', { visible: true });
+  assert.equal(await page.$$eval('.asset-card', cards => cards.length), 3);
+  console.log('UI smoke passed: shared library and settings in both modes, local tags, Pexels mocks, responsive layout and keyboard focus.');
 } finally { await browser.close(); }

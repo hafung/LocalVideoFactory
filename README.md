@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="build/icon.png" width="88" alt="LocalVideoFactory 图标">
+<img src="build/icon.png" width="88" alt="帧舟图标">
 
-# LocalVideoFactory · 本地 AI 短视频工厂
+# 帧舟 FrameSkiff · 本地 AI 视频工作台
 
-### 一段文案，自动成为一条片。
+### 从文案成片，到真人口播精剪。
 
 **自动找素材 · 原片智能选段 · 自动剪辑 · 自然配音 · 动态字幕 · 免费配乐**
 
@@ -13,22 +13,20 @@
 [简体中文](README.md) · [English](README.en.md) · [下载 Windows 版](https://github.com/hafung/LocalVideoFactory/releases/latest) · [源码运行](docs/building.md) · [反馈建议](https://github.com/hafung/LocalVideoFactory/issues)
 
 [![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
-[![Source](https://img.shields.io/badge/source-v0.2.10-d9ff69?labelColor=17181d)](package.json)
+[![Source](https://img.shields.io/badge/source-v0.2.11-d9ff69?labelColor=17181d)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
 [![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#本地-ai-创作栈)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
 
 </div>
 
-**LocalVideoFactory** 是一个开源的本地 AI 短视频工厂。输入文案，自动配音、对齐字幕、检索素材并剪辑成片；有原视频，就按内容挑选片段，画面不够则自动找素材补齐。支持声音克隆、动态字幕和免费音乐检索，生成后还能按分镜卡片精修。核心 AI 在本机 CPU 上运行，无需独立显卡。
+**帧舟 FrameSkiff** 是一个开源的本地 AI 视频工作台。输入文案，可以自动配音、对齐字幕、检索素材并剪辑成片。导入真人口播，可以保留原声，整理停顿和字幕，并为重点补画面。核心 AI 在本机 CPU 上运行，无需独立显卡。
 
-桌面应用名为 **声织 VoxWeave**。仓库原名 `VoxWeave`，现改为更直观的 `LocalVideoFactory`；已有工程、音色、CLI 和安装包沿用兼容标识。
+> 本文介绍当前源码。已经发布的安装包及其功能见 [GitHub Releases](https://github.com/hafung/LocalVideoFactory/releases/latest)。
 
-> **版本说明**　下文展示 v0.2.10 源码功能。[安装包与版本说明](https://github.com/hafung/LocalVideoFactory/releases/latest)以发布页为准，也可按[源码运行指南](docs/building.md)构建。v0.2.10 支持首次启动时下载模型或导入已有模型，AI 分镜与原片理解模型需单独准备。
+## 先看项目演示
 
-## 先看品牌宣传片
-
-这条 31 秒的 16:9 品牌宣传片介绍了 LocalVideoFactory，可直接播放并听到声音。
+这条 31 秒的有声演示介绍了文案成片流程，片中使用项目旧称。
 
 https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
 
@@ -40,7 +38,7 @@ https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
 
 ## 从文案到成片，一条流水线
 
-当前源码工作台新增独立的 **口播精剪** 模式：导入真人口播视频，保留本人原声，缩短有静音证据的长停顿，试听并处理口头语建议，校正字幕，以及添加重点卡片、手绘线框图解、B-roll 和画中画。支持整句、逐字、逐词组出现与 MP4/SRT/ASS 导出。原有工作流在 **文案成片** 模式中继续使用。[口播功能范围与说明](docs/talking-head.zh-CN.md)
+顶部可以切换 **文案成片** 和 **口播精剪**，两种模式共用素材库与创作设置。口播精剪保留本人原声，可缩短长停顿、试听口头语建议、校正字幕，并为重点添加卡片、图解、B-roll 或画中画。支持 MP4、SRT 和 ASS 导出。 [口播功能说明](docs/talking-head.zh-CN.md)
 
 ```text
 文案 + 可选原始视频
@@ -71,7 +69,7 @@ AI 理解文案，规划分镜与素材检索词
 | 🗂️ **卡片式精修** | 按句或合并相邻几句换画面、试听候选、选择同一视频的其他区间 | 在多轨时间线上做简单替换 |
 | 📦 **多格式交付** | H.264/AAC MP4、旁白/混合音轨 MP3、SRT/ASS，画面与字幕同步变速 | 多次转码和分别维护字幕版本 |
 
-AI 分镜与多模态选段需要准备 Qwen3.5-4B 和匹配的视觉投影模型。缺少模型时会回退并显示提示；[配置方式与模型说明](docs/building.md#本地模型与运行时)。
+智能分镜和原片选段可在「创作设置」按需下载和启用。 [模型说明](docs/building.md#本地模型与运行时)
 
 ## 看得见，也改得动
 
@@ -101,7 +99,7 @@ AI 分镜与多模态选段需要准备 Qwen3.5-4B 和匹配的视觉投影模�
 
 ## 三步做出第一条短视频
 
-1. **准备应用。** 按[源码运行指南](docs/building.md)启动当前版本；准备所需模型，在素材库导入视频、图片或音频。Pexels 联网素材需要 API Key，Openverse 音乐搜索无需填写 Key。
+1. **准备应用和素材。** 按源码指南启动，或下载安装包。用当前源码打包的安装版首次自动准备配音和字幕，也可以导入已有模型。素材库可导入自己的素材，或从 Pixabay 下载后导入。 [源码运行指南](docs/building.md)
 2. **输入文案，点“生成视频”。** 原始视频可选；没有原片时，从本地素材、在线素材和动态文字中组织画面。
 3. **预览、精修、导出。** 换画面、调字幕、选配乐，应用改动后导出 MP4；需要继续剪辑时，另存旁白、混合音轨和字幕。
 

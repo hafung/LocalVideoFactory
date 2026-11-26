@@ -34,7 +34,7 @@ $configPath = Join-Path $stage 'electron-builder.json'
 $resourceRoot = Join-Path $stage 'resources'
 $package = Get-Content (Join-Path $project 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $output = if ($ReleaseDir) { [IO.Path]::GetFullPath($ReleaseDir) } else { Join-Path $project 'release' }
-$installer = Join-Path $output "VoxWeave-Setup-$($package.version)-x64.exe"
+$installer = Join-Path $output "FrameSkiff-Setup-$($package.version)-x64.exe"
 if (Test-Path -LiteralPath $installer) { throw "Installer already exists: $installer. Bump the version or move the existing release." }
 Push-Location $project
 $previousPath = $env:PATH

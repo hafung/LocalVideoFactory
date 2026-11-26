@@ -29,7 +29,7 @@ if ($Package) {
   if ($LASTEXITCODE -ne 0) { throw 'Portable packaging failed.' }
 }
 if ($PackagedSmoke) {
-  $packageRoot = Get-ChildItem (Join-Path $root 'release-dev') -Directory -Filter 'VoxWeave-Portable-*-x64' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+  $packageRoot = Get-ChildItem (Join-Path $root 'release-dev') -Directory -Filter 'FrameSkiff-Portable-*-x64' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
   $env:VOXWEAVE_COMPOSITION_SMOKE_CLONE_REFERENCE = Join-Path $root 'demo-voice-clone.wav'
   $env:VOXWEAVE_COMPOSITION_SMOKE_RATE = '2'
   $env:VOXWEAVE_ARTIFACT_SMOKE_DIR = Join-Path $smoke 'packaged-artifacts'

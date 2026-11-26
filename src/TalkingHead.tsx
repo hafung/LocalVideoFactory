@@ -1,8 +1,7 @@
 import '@hyperframes/player';
 import { useEffect, useRef, useState } from 'react';
 import type { HyperframesPlayer } from '@hyperframes/player';
-import { AudioLines, Film, FolderOpen, Library, Play, Plus, RefreshCw, Scissors, Square, Upload, X } from 'lucide-react';
-import { LibraryPanel } from './LibraryPanel';
+import { Film, FolderOpen, Play, Plus, RefreshCw, Scissors, Square, Upload, X } from 'lucide-react';
 import { TalkVoiceEnhancement } from './TalkVoiceEnhancement';
 import { sourceToTalkTime, talkDuration, type TalkProject, type TalkResult, type TalkProgress,
   type TalkUpdate, type TalkExportProgress, type TalkOverlay, type TalkCaptionSettings } from '../shared/talking-head';
@@ -15,7 +14,9 @@ const seconds = (time: number) => `${(time / 1000).toFixed(2)} 秒`;
 const strengthNames = { light: '轻度', natural: '自然', tight: '紧凑' };
 const revealNames = { sentence: '整句出现', character: '逐字出现', phrase: '逐词组出现' };
 
-export function TalkingHead({ active }: { active: boolean }) {
+export function TalkingHead({ active, assets, dialogOpen, openLibrary }: {
+  active: boolean; assets: MediaAsset[]; dialogOpen: boolean; openLibrary: () => void;
+}) {
   const [result, setResult] = useState<TalkResult>();
   const project = result?.project;
   const [status, setStatus] = useState({ ready: false, message: '正在检测口播资源…' });
@@ -34,8 +35,6 @@ export function TalkingHead({ active }: { active: boolean }) {
   const [manualStart, setManualStart] = useState('0');
   const [manualEnd, setManualEnd] = useState('');
   const [sourcePreview, setSourcePreview] = useState<{ startMs: number; endMs: number; label: string }>();
-  const [libraryOpen, setLibraryOpen] = useState(false);
-  const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [overlayType, setOverlayType] = useState<TalkOverlay['type']>('callout');
   const [overlayText, setOverlayText] = useState('');
   const [overlayAsset, setOverlayAsset] = useState('');
@@ -54,16 +53,15 @@ export function TalkingHead({ active }: { active: boolean }) {
     if (clearDrafts) setDrafts({});
     setSelectedCue(previous => next.project.cues.some(cue => cue.id === previous) ? previous : next.project.cues[0]?.id ?? '');
   }
-  async function refreshAssets() { const items = await desktop()?.listAssets(); if (items) setAssets(items); }
   async function refreshStatus() {
-    try { setStatus(await api()?.status() ?? { ready: false, message: '请在 VoxWeave 桌面应用中使用口播精剪。' }); }
+    try { setStatus(await api()?.status() ?? { ready: false, message: '请在帧舟桌面应用中使用口播精剪。' }); }
     catch (error) { setStatus({ ready: false, message: messageOf(error) }); }
   }
   useEffect(() => {
     const talk = api();
     if (!talk) { void refreshStatus(); return; }
     let mounted = true;
-    void refreshStatus(); void refreshAssets().catch(() => undefined);
+    void refreshStatus();
     const unsubscribe = talk.onProgress(event => {
       generationReceived.current = true;
       if (jobRef.current && jobRef.current !== event.jobId) return;
@@ -88,6 +86,9 @@ export function TalkingHead({ active }: { active: boolean }) {
     return () => { mounted = false; unsubscribe(); unsubscribeExport(); };
   }, []);
   useEffect(() => { if (active) void refreshStatus(); }, [active]);
+  useEffect(() => desktop()?.onModelSetupProgress?.(value => {
+    if (value.state === 'ready' || value.state === 'error') void refreshStatus();
+  }), []);
   useEffect(() => {
     if (!active) { playerRef.current?.pause(); sourceRef.current?.pause(); }
   }, [active]);
@@ -106,14 +107,13 @@ export function TalkingHead({ active }: { active: boolean }) {
     return () => video.removeEventListener('loadedmetadata', seek);
   }, [sourcePreview, result?.preview.sourceUrl]);
   useEffect(() => {
-    if (!active || (!sourcePreview && !libraryOpen)) return;
+    if (!active || !sourcePreview) return;
     const previous = document.activeElement as HTMLElement | null;
     const dialog = document.querySelector<HTMLElement>('.talk-dialog');
     dialog?.querySelector<HTMLElement>('button')?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        sourceRef.current?.pause(); setSourcePreview(undefined); setLibraryOpen(false);
-        void refreshAssets().catch(() => undefined);
+        sourceRef.current?.pause(); setSourcePreview(undefined);
       }
       if (event.key !== 'Tab') return;
       const nodes = [...(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),video[controls],summary') ?? [])]
@@ -124,7 +124,7 @@ export function TalkingHead({ active }: { active: boolean }) {
     };
     document.addEventListener('keydown', keydown);
     return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
-  }, [!!sourcePreview, libraryOpen, active]);
+  }, [!!sourcePreview, active]);
 
   async function chooseSource() {
     setError('');
@@ -184,11 +184,6 @@ export function TalkingHead({ active }: { active: boolean }) {
   const filteredCues = project?.cues.filter(cue => `${cue.originalText}${drafts[cue.id] ?? cue.text}`.includes(cueQuery)).slice(0, 200) ?? [];
 
   return <div className="talk-app app-shell">
-    <header className="topbar drag-region">
-      <div className="brand no-drag"><span className="brand-mark"><AudioLines size={19}/></span><strong>声织</strong><small>口播精剪</small></div>
-      <div className="top-actions no-drag"><button className="library-button" disabled={pending} onClick={() => setLibraryOpen(true)}><Library size={16}/> 素材库</button>
-        <button className="library-button" disabled={pending} onClick={() => void refreshStatus()}><RefreshCw size={14}/> 检测资源</button></div>
-    </header>
     <main className="talk-layout">
       <section className="talk-controls" aria-label="口播导入与设置">
         <div className="pane-heading"><span>TALKING HEAD</span><h1>保留你的表达，<br/>剪出自然节奏。</h1><p>导入真人口播，整理停顿、校正字幕，再为重点补上画面。</p></div>
@@ -203,7 +198,10 @@ export function TalkingHead({ active }: { active: boolean }) {
         <button className="generate-button" disabled={pending || !sourcePath || !status.ready} onClick={() => void create()}><Scissors size={17}/> {job ? '正在整理口播…' : '开始口播精剪'}</button>
         {project && strength !== project.strength && !sourcePath && <button className="secondary-button" disabled={pending} onClick={() => void update({ strength })}>将强度应用到当前口播</button>}
         <p className={`talk-status ${status.ready ? 'ready' : ''}`} role="status">{status.message}</p>
-        {!status.ready && <button className="secondary-button" onClick={() => void desktop()?.retryModelSetup()}>重试资源下载</button>}
+        {!status.ready && <div className="talk-actions">
+          <button disabled={pending} onClick={() => void refreshStatus()}><RefreshCw size={14}/> 检测资源</button>
+          <button disabled={pending} onClick={() => void desktop()?.retryModelSetup()}>重试资源下载</button>
+        </div>}
         {progress && <div className="talk-progress" role="status"><span>{progress.message}</span>{!['complete', 'error', 'cancelled'].includes(progress.phase) && <progress value={progress.progress} max="1"/>}</div>}
         {job && <button className="secondary-button" onClick={() => void api()?.cancel(job)}><Square size={13}/> 取消处理</button>}
         {project && <>
@@ -221,7 +219,7 @@ export function TalkingHead({ active }: { active: boolean }) {
           <label className="talk-check"><input type="checkbox" checked={project.captions.enabled} disabled={pending} onChange={event => void update({ captions: { ...project.captions, enabled: event.target.checked } })}/> 显示视频字幕</label>
           <details className="talk-audio"><summary>原声与配乐</summary>
             <TalkVoiceEnhancement key={project.id} project={project} disabled={pending} playerRef={playerRef}
-              canAudition={active && !sourcePreview && !libraryOpen}
+              canAudition={active && !sourcePreview && !dialogOpen}
               apply={voiceEnhancement => void update({ audio: { ...project.audio, voiceEnhancement } }, false)}/>
             <label className="talk-field">原声音量 {Math.round(project.audio.voiceVolume * 100)}%<input aria-label="口播原声音量" type="range" min="0" max="2" step="0.05" disabled={pending}
               defaultValue={project.audio.voiceVolume} key={`${project.id}-${project.revision}-volume`} onPointerUp={event => { const value = Number(event.currentTarget.value); if (value !== project.audio.voiceVolume) void update({ audio: { ...project.audio, voiceVolume: value } }); }}
@@ -305,7 +303,7 @@ export function TalkingHead({ active }: { active: boolean }) {
             <label className="talk-field">关联口播<select aria-label="画面关联口播" value={selectedCue} disabled={pending} onChange={event => chooseCue(event.target.value)}>{project.cues.map(cue => <option value={cue.id} key={cue.id}>{(cue.startMs / 1000).toFixed(1)}s · {cue.text.replace(/\|/gu, '').slice(0, 36) || cue.originalText}</option>)}</select></label>
             <label className="talk-field">增强类型<select aria-label="口播增强类型" value={overlayType} disabled={pending} onChange={event => setOverlayType(event.target.value as typeof overlayType)}><option value="callout">重点卡片</option><option value="whiteboard">手绘线框图解</option><option value="image">图片 / 贴图</option><option value="video">B-roll 视频</option></select></label>
             {['callout', 'whiteboard'].includes(overlayType) ? <label className="talk-field">图解文字<textarea aria-label="图解文字" maxLength={300} value={overlayText} disabled={pending} onChange={event => setOverlayText(event.target.value)} placeholder="输入需要强调的要点，可换行…"/></label>
-              : <label className="talk-field">素材<select aria-label="口播增强素材" disabled={pending} value={overlayAsset} onChange={event => setOverlayAsset(event.target.value)}><option value="">选择素材</option>{assets.filter(asset => asset.type === overlayType).map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button className="talk-text-button" disabled={pending} onClick={() => setLibraryOpen(true)}>打开素材库导入 / 搜索素材</button></label>}
+              : <label className="talk-field">素材<select aria-label="口播增强素材" disabled={pending} value={overlayAsset} onChange={event => setOverlayAsset(event.target.value)}><option value="">选择素材</option>{assets.filter(asset => asset.type === overlayType).map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button className="talk-text-button" disabled={pending} onClick={openLibrary}>打开素材库导入 / 搜索素材</button></label>}
             <label className="talk-field">显示方式<select value={overlayLayout} disabled={pending} onChange={event => setOverlayLayout(event.target.value as typeof overlayLayout)}><option value="pip">画中画</option><option value="cover">全屏覆盖</option></select></label>
             {overlayLayout === 'pip' && <label className="talk-field">位置<select value={overlayPosition} disabled={pending} onChange={event => setOverlayPosition(event.target.value as typeof overlayPosition)}><option value="top-right">右上方</option><option value="top-left">左上方</option></select><small>请在预览中检查是否遮挡脸部或手势，可切换位置。</small></label>}
             <button className="talk-primary" disabled={pending || !selectedCue || (['callout', 'whiteboard'].includes(overlayType) ? !overlayText.trim() : !overlayAsset)} onClick={() => void addOverlay()}><Plus size={15}/> 应用到这句话</button>
@@ -322,6 +320,5 @@ export function TalkingHead({ active }: { active: boolean }) {
         <button onClick={() => { if (sourceRef.current) { sourceRef.current.currentTime = sourcePreview.startMs / 1000; void sourceRef.current.play().catch(error => setError(messageOf(error))); } }}><Play size={14}/> 重听这段</button>
       </section>
     </div>}
-    {libraryOpen && <div className="talk-dialog-backdrop"><section className="talk-dialog talk-library" role="dialog" aria-modal="true" aria-label="口播素材库"><header><div><h2>素材库</h2><p>为口播选择 B-roll、图片与配乐。</p></div><button aria-label="关闭口播素材库" onClick={() => { setLibraryOpen(false); void refreshAssets().catch(error => setError(messageOf(error))); }}><X size={18}/></button></header><LibraryPanel changed={refreshAssets}/></section></div>}
   </div>;
 }

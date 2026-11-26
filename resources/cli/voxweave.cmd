@@ -1,3 +1,3 @@
 @echo off
 setlocal
-"%~dp0..\..\声织 VoxWeave.exe" --cli %*
+"%~dp0..\..\FrameSkiff.exe" --cli %*

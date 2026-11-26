@@ -87,10 +87,10 @@ jobs:
         run: node scripts/verify-offline-resources.mjs --root release/win-unpacked/resources --runtime-only
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalVideoFactory-Windows-Setup
+          name: FrameSkiff-Windows-Setup
           path: |
-            release/VoxWeave-Setup-*-x64.exe
-            release/VoxWeave-Setup-*-x64.exe.sha256
+            release/FrameSkiff-Setup-*-x64.exe
+            release/FrameSkiff-Setup-*-x64.exe.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -105,7 +105,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: LocalVideoFactory-Windows-Setup
+          name: FrameSkiff-Windows-Setup
           path: release
       - name: Publish installer and checksum
         env:
@@ -116,8 +116,8 @@ jobs:
             if [ -f "$notes_file" ]; then
               notes_args=(--notes-file "$notes_file")
             else
-              notes_args=(--notes 'Local AI short-video creation studio. The Windows installer retains the VoxWeave filename for compatibility. On first launch it downloads approximately 9 GB of speech and retrieval models with progress, resume, and SHA-256 verification. Multimodal storyboarding requires separate scene-model setup. Once models and local media are ready, the core creation workflow works offline.')
+              notes_args=(--notes 'FrameSkiff is a local AI video workspace for script-to-video and talking-head editing. The Windows x64 installer and its SHA-256 checksum are attached.')
             fi
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "LocalVideoFactory $GITHUB_REF_NAME" "${notes_args[@]}"
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "帧舟 FrameSkiff $GITHUB_REF_NAME" "${notes_args[@]}"
           fi
           gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.sha256 --repo "$GITHUB_REPOSITORY"

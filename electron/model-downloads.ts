@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
-import { ModelDownloadsSchema, type ModelDownloads, type ModelSetupStatus } from '../shared/model-downloads.js';
+import { modelGroup, ModelDownloadsSchema, type ModelSetupStatus } from '../shared/model-downloads.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL } from './tts-model.js';
 
 type Descriptor = { path: string; sha256: string; size?: number };
@@ -15,6 +15,7 @@ export interface LocalModelSources {
   roots: readonly string[];
   narrationModelDir?: string;
   embeddingModelPath?: string;
+  sceneModelPath?: string;
 }
 
 function localModelFiles(relative: string, sources: LocalModelSources): Set<string> {
@@ -35,6 +36,12 @@ function localModelFiles(relative: string, sources: LocalModelSources): Set<stri
   if (sources.embeddingModelPath && relative === 'semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf') {
     files.add(path.resolve(sources.embeddingModelPath));
   }
+  if (sources.sceneModelPath && relative === 'scene-planner/model/Qwen3.5-4B-Q4_K_M.gguf') {
+    files.add(path.resolve(sources.sceneModelPath));
+  }
+  if (sources.sceneModelPath && relative === 'scene-planner/model/mmproj-F16.gguf') {
+    files.add(path.resolve(path.dirname(sources.sceneModelPath), 'mmproj-F16.gguf'));
+  }
   return files;
 }
 
@@ -48,7 +55,7 @@ async function hash(file: string, signal?: AbortSignal): Promise<string> {
 // restarting the app can reuse them without administrator privileges.
 export async function downloadFile(url: string, target: string, signal: AbortSignal,
   progress: (bytes: number, total?: number) => void, descriptor?: Descriptor,
-  request: typeof fetch = fetch): Promise<void> {
+  request: typeof fetch = fetch, verifying?: () => void): Promise<void> {
   await mkdir(path.dirname(target), { recursive: true });
   const partial = `${target}.part`;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -58,8 +65,9 @@ export async function downloadFile(url: string, target: string, signal: AbortSig
     const touch = () => { clearTimeout(timer); timer = setTimeout(() => timeout.abort(new Error('模型下载超时')), 120_000); };
     try {
       let offset = await stat(partial).then(info => info.size).catch(() => 0);
-      if (descriptor?.size === offset && await hash(partial, signal) === descriptor.sha256) {
-        await rename(partial, target); return;
+      if (descriptor?.size === offset) {
+        verifying?.();
+        if (await hash(partial, signal) === descriptor.sha256) { await rename(partial, target); return; }
       }
       const response = await request(url, { signal: AbortSignal.any([signal, timeout.signal]),
         headers: offset ? { Range: `bytes=${offset}-`, 'Accept-Encoding': 'identity' } : { 'Accept-Encoding': 'identity' } });
@@ -93,8 +101,11 @@ export async function downloadFile(url: string, target: string, signal: AbortSig
       await pipeline(chunks(), createWriteStream(partial, { flags: offset ? 'a' : 'w' }),
         { signal: AbortSignal.any([signal, timeout.signal]) });
       if ((total && bytes !== total) || (descriptor?.size && bytes !== descriptor.size)) throw new Error('模型文件下载不完整');
-      if (descriptor && await hash(partial, signal) !== descriptor.sha256) {
-        await rm(partial, { force: true }); throw new Error(`模型 SHA-256 校验失败：${descriptor.path}`);
+      if (descriptor) {
+        verifying?.();
+        if (await hash(partial, signal) !== descriptor.sha256) {
+          await rm(partial, { force: true }); throw new Error(`模型 SHA-256 校验失败：${descriptor.path}`);
+        }
       }
       await rename(partial, target);
       return;
@@ -112,15 +123,19 @@ export class ModelDownloader {
   private controller = new AbortController();
   private verified: Record<string, Verified> = {};
   private lastPublished = 0;
+  private readonly verifiedPath: string;
   constructor(private catalogPath: string, readonly root: string,
     private publish: (status: ModelSetupStatus) => void,
     private request: typeof fetch = fetch,
-    private localSources: () => LocalModelSources = () => ({ roots: [] })) {}
+    private localSources: () => LocalModelSources = () => ({ roots: [] }),
+    private group?: ReturnType<typeof modelGroup>) {
+    this.verifiedPath = path.join(root, group && group !== 'basic' ? `.verified-${group}.json` : '.verified.json');
+  }
 
   start(): Promise<void> {
     if (this.running) return this.running;
     this.controller = new AbortController();
-    this.update({ state: 'checking', message: '正在检查本地模型…', completedFiles: 0, downloadedBytes: 0, totalBytes: undefined });
+    this.update({ state: 'checking', message: '正在检查本地模型…', activity: undefined, completedFiles: 0, downloadedBytes: 0, totalBytes: undefined });
     this.running = this.prepare().catch(error => {
       if (!this.controller.signal.aborted) this.update({ state: 'error', message: `${error instanceof Error ? error.message : String(error)}。请检查网络和磁盘空间后重试。` });
     }).finally(() => { this.running = undefined; });
@@ -133,6 +148,7 @@ export class ModelDownloader {
     }
     await this.start();
   }
+  get active(): boolean { return !!this.running; }
   cancel(): void { this.controller.abort(); }
   private update(value: Partial<ModelSetupStatus>): void {
     this.status = { ...this.status, ...value };
@@ -154,7 +170,7 @@ export class ModelDownloader {
       if (source === target) continue;
       const info = await stat(source).catch(() => undefined);
       if (!info?.isFile() || !info.size || (file.size && info.size !== file.size)) continue;
-      this.update({ message: `正在导入并校验 ${file.path}…` });
+      this.update({ activity: 'importing', message: `正在导入并校验 ${file.path}…` });
       await mkdir(path.dirname(target), { recursive: true });
       const temporary = `${target}.import-${randomUUID()}`;
       const digest = createHash('sha256');
@@ -188,31 +204,38 @@ export class ModelDownloader {
   private async record(file: Descriptor): Promise<void> {
     const info = await stat(path.join(this.root, file.path));
     this.verified[file.path] = { sha256: file.sha256, size: info.size, mtimeMs: info.mtimeMs };
-    await writeFile(path.join(this.root, '.verified.json'), JSON.stringify(this.verified));
-    this.update({ completedFiles: this.status.completedFiles + 1 });
+    await writeFile(this.verifiedPath, JSON.stringify(this.verified));
+    this.update({ completedFiles: this.status.completedFiles + 1, downloadedBytes: 0, totalBytes: undefined });
   }
   private async prepare(): Promise<void> {
-    const catalog: ModelDownloads = ModelDownloadsSchema.parse(JSON.parse(await readFile(this.catalogPath, 'utf8')));
+    const catalog = ModelDownloadsSchema.parse(JSON.parse(await readFile(this.catalogPath, 'utf8')));
+    const includes = (file: { path: string }) => !this.group || modelGroup(file.path) === this.group;
+    const files = catalog.files.filter(includes);
+    const archives = catalog.archives.map(archive => ({ ...archive, files: archive.files.filter(includes) }))
+      .filter(archive => archive.files.length > 0);
+    if (!files.length && !archives.length) throw new Error('安装包缺少这项功能的下载清单');
     await mkdir(this.root, { recursive: true });
-    this.verified = await readFile(path.join(this.root, '.verified.json'), 'utf8').then(data => {
+    this.verified = await readFile(this.verifiedPath, 'utf8').then(data => {
       const parsed: unknown = JSON.parse(data);
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, Verified> : {};
     }).catch(() => ({}));
-    this.update({ totalFiles: catalog.files.length + catalog.archives.reduce((sum, archive) => sum + archive.files.length, 0) });
+    this.update({ totalFiles: files.length + archives.reduce((sum, archive) => sum + archive.files.length, 0) });
     const signal = this.controller.signal;
     const sources = this.localSources();
-    const missingFiles = await this.missingFiles(catalog.files, sources, signal);
+    const missingFiles = await this.missingFiles(files, sources, signal);
     const missingArchives = [];
-    for (const archive of catalog.archives) {
+    for (const archive of archives) {
       const files = await this.missingFiles(archive.files, sources, signal);
       if (files.length) missingArchives.push({ ...archive, files });
     }
     for (const file of missingFiles) {
       signal.throwIfAborted();
-      this.update({ state: 'downloading', message: `正在下载 ${file.path.split('/').slice(-2).join('/')}…`, downloadedBytes: 0, totalBytes: file.size });
+      const message = `正在下载 ${file.path.split('/').slice(-2).join('/')}…`;
+      this.update({ state: 'downloading', activity: undefined, message, downloadedBytes: 0, totalBytes: file.size });
       try {
         await downloadFile(file.url, path.join(this.root, file.path), signal,
-          (downloadedBytes, totalBytes) => this.update({ downloadedBytes, totalBytes }), file, this.request);
+          (downloadedBytes, totalBytes) => this.update({ activity: undefined, downloadedBytes, totalBytes }), file, this.request,
+          () => this.update({ activity: 'verifying', message: `正在校验 ${file.path.split('/').at(-1)}…` }));
       } catch (error) {
         throw new Error(`${file.path}：${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
@@ -222,12 +245,12 @@ export class ModelDownloader {
       signal.throwIfAborted();
       try {
         const target = path.join(this.root, '.downloads', archive.path);
-        this.update({ state: 'downloading', message: '正在下载 SenseVoice 字幕模型…', downloadedBytes: 0, totalBytes: undefined });
+        this.update({ state: 'downloading', activity: undefined, message: '正在下载 SenseVoice 字幕模型…', downloadedBytes: 0, totalBytes: undefined });
         if (!await stat(target).catch(() => undefined)) await downloadFile(archive.url, target, signal,
           (downloadedBytes, totalBytes) => this.update({ downloadedBytes, totalBytes }), undefined, this.request);
         const temporary = await mkdtemp(path.join(this.root, '.extract-'));
         try {
-          this.update({ message: '正在解压并校验 SenseVoice 字幕模型…' });
+          this.update({ activity: 'extracting', message: '正在解压并校验 SenseVoice 字幕模型…' });
           await promisify(execFile)(process.platform === 'win32' ? 'tar.exe' : 'tar',
             ['-xf', target, '-C', temporary, ...archive.files.map(file => file.member)], { windowsHide: true, signal });
           for (const file of archive.files) {
@@ -248,10 +271,10 @@ export class ModelDownloader {
       for (const file of archive.files) await this.record(file);
     }
     signal.throwIfAborted();
-    for (const manifest of catalog.manifests) {
+    for (const manifest of catalog.manifests.filter(includes)) {
       await mkdir(path.dirname(path.join(this.root, manifest.path)), { recursive: true });
       await writeFile(path.join(this.root, manifest.path), JSON.stringify(manifest.data, null, 2) + '\n');
     }
-    this.update({ state: 'ready', message: '模型已就绪，可离线创作。' });
+    this.update({ state: 'ready', activity: undefined, message: '模型已就绪，可离线创作。' });
   }
 }

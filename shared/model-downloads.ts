@@ -16,6 +16,16 @@ export const ModelDownloadsSchema = z.object({
   manifests: z.array(z.object({ path: relativePath, data: z.record(z.string(), z.unknown()) }))
 });
 export type ModelDownloads = z.infer<typeof ModelDownloadsSchema>;
+export const OPTIONAL_MODELS = ['scene', 'search', 'clone'] as const;
+export type OptionalModel = typeof OPTIONAL_MODELS[number];
+
+export function modelGroup(file: string): 'basic' | OptionalModel {
+  if (file.startsWith('scene-planner/')) return 'scene';
+  if (file.startsWith('semantic/model/')) return 'search';
+  if (file.startsWith('models/qwen3-tts-1.7b-base/')) return 'clone';
+  return 'basic';
+}
+
 export interface ModelSetupStatus {
   state: 'bundled' | 'checking' | 'downloading' | 'ready' | 'error';
   message: string;
@@ -23,4 +33,10 @@ export interface ModelSetupStatus {
   totalFiles: number;
   downloadedBytes: number;
   totalBytes?: number;
+  activity?: 'importing' | 'verifying' | 'extracting';
 }
+export type OptionalModelStatus = Record<OptionalModel, {
+  downloadable: boolean;
+  installed: boolean;
+  progress?: ModelSetupStatus;
+}>;

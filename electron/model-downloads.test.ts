@@ -89,6 +89,43 @@ describe('resumable model downloads', () => {
 });
 
 describe('first launch model preparation', () => {
+  it('prepares only basic models at startup and downloads each optional pack independently', async () => {
+    const root = await temporary();
+    const basic = descriptor.path;
+    const tokenizer = 'models/qwen3-tts-tokenizer/model.safetensors';
+    const clone = 'models/qwen3-tts-1.7b-base/model.safetensors';
+    const search = 'semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf';
+    const scene = ['scene-planner/model/Qwen3.5-4B-Q4_K_M.gguf', 'scene-planner/model/mmproj-F16.gguf'];
+    const sceneManifest = 'scene-planner/manifest.json';
+    const cache = path.join(root, 'cache');
+    const catalogPath = await writeResource(root, 'catalog.json', JSON.stringify({
+      schemaVersion: 1,
+      files: [basic, tokenizer, clone, search, ...scene].map(file => ({
+        ...descriptor, path: file, url: `https://example.org/${file}`
+      })),
+      archives: [],
+      manifests: [{ path: sceneManifest, data: { modelFile: scene[0], projectorFile: scene[1] } }]
+    }));
+    const network = request(() => new Response(content));
+    const basicDownload = new ModelDownloader(catalogPath, cache, () => {}, network, undefined, 'basic');
+    const sceneDownload = new ModelDownloader(catalogPath, cache, () => {}, network, undefined, 'scene');
+    const cloneDownload = new ModelDownloader(catalogPath, cache, () => {}, network, undefined, 'clone');
+
+    await basicDownload.start();
+    expect(basicDownload.status).toMatchObject({ state: 'ready', completedFiles: 2 });
+    expect(network).toHaveBeenCalledTimes(2);
+    expect(await stat(path.join(cache, sceneManifest)).catch(() => undefined)).toBeUndefined();
+
+    await Promise.all([sceneDownload.start(), cloneDownload.start()]);
+    expect(sceneDownload.status).toMatchObject({ state: 'ready', completedFiles: 2 });
+    expect(cloneDownload.status).toMatchObject({ state: 'ready', completedFiles: 1 });
+    expect(network).toHaveBeenCalledTimes(5);
+    for (const file of [basic, tokenizer, clone, ...scene]) expect(await readFile(path.join(cache, file), 'utf8')).toBe(content);
+    expect(await stat(path.join(cache, search)).catch(() => undefined)).toBeUndefined();
+    expect(JSON.parse(await readFile(path.join(cache, '.verified-scene.json'), 'utf8'))).toHaveProperty(scene[0]);
+    expect(JSON.parse(await readFile(path.join(cache, '.verified-clone.json'), 'utf8'))).toHaveProperty(clone);
+  });
+
   it('imports a complete manual setup including the shared tokenizer and extracted archive without fetching', async () => {
     const root = await temporary();
     const manual = await temporary();

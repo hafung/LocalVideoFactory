@@ -30,6 +30,13 @@ const api: VoxWeaveApi = {
     ipcRenderer.on('models:progress', handler);
     return () => ipcRenderer.removeListener('models:progress', handler);
   },
+  optionalModelStatus: () => ipcRenderer.invoke('models:optional-status'),
+  prepareOptionalModel: group => ipcRenderer.invoke('models:prepare-optional', group),
+  onOptionalModelProgress: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, ...args: Parameters<typeof listener>) => listener(...args);
+    ipcRenderer.on('models:optional-progress', handler);
+    return () => ipcRenderer.removeListener('models:optional-progress', handler);
+  },
   getStatus: () => ipcRenderer.invoke('engine:status'),
   configure: config => ipcRenderer.invoke('engine:configure', config),
   semanticStatus: () => ipcRenderer.invoke('semantic:status'),

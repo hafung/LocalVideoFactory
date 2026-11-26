@@ -1,10 +1,12 @@
 import '@hyperframes/player';
 import './library.css';
 import { LibraryPanel } from './LibraryPanel';
+import { ModelProgress } from './ModelProgress';
 import type { HyperframesPlayer } from '@hyperframes/player';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  Activity, AudioLines, Check, ChevronDown, Film, FolderOpen, Image, Library,
+  Activity, Check, ChevronDown, Download, Film, FolderOpen, Image,
   Play, Plus, RefreshCw, Settings2, Sparkles, Square, Upload, Video, WandSparkles, X
 } from 'lucide-react';
 import { estimateDuration } from '../shared/markup';
@@ -12,7 +14,7 @@ import type { EditPlan, CaptionCue } from '../shared/edit-plan';
 import type { MediaAsset, OnlineAsset } from '../shared/library';
 import type { SceneCandidate, SceneCandidateResult, SceneChoice } from '../shared/scene-candidates';
 import type { CompositionProgressEvent, EngineStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
-import type { ModelSetupStatus } from '../shared/model-downloads';
+import type { ModelSetupStatus, OptionalModel, OptionalModelStatus } from '../shared/model-downloads';
 
 const api = () => window.voxweave;
 function captionAnnotation(cue: CaptionCue): string {
@@ -41,9 +43,15 @@ const stages: Array<{ phase: CompositionProgressEvent['phase']; label: string }>
 ];
 
 type Preview = NonNullable<CompositionProgressEvent['preview']>;
+const modelSizes: Record<OptionalModel, string> = { scene: '3.4 GB', search: '640 MB', clone: '3.9 GB' };
 
-export function App() {
-  const [script, setScript] = useState('产品很好，却一直卖不出去？问题也许不在产品，而在表达。让声织帮你把文案、旁白和画面，自动编成一条完整视频。');
+export type WorkspaceDialog = 'settings' | 'library' | 'audio' | 'online';
+
+export function App({ active, dialog, openDialog, assets, refreshAssets }: {
+  active: boolean; dialog?: WorkspaceDialog; openDialog: (dialog?: WorkspaceDialog) => void;
+  assets: MediaAsset[]; refreshAssets: () => Promise<void>;
+}) {
+  const [script, setScript] = useState('产品很好，却一直卖不出去？问题也许不在产品，而在表达。让帧舟把文案、旁白和画面编成一条完整视频。');
   const [voiceId, setVoiceId] = useState('vivian');
   const [clonedVoices, setClonedVoices] = useState<VoiceProfile[]>([]);
   const [cloneOpen, setCloneOpen] = useState(false);
@@ -61,8 +69,8 @@ export function App() {
   const [captionError, setCaptionError] = useState('');
   const [sourceVideoPath, setSourceVideoPath] = useState<string>();
   const [moreOpen, setMoreOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [libraryView, setLibraryView] = useState<'all' | 'audio'>();
+  const settingsOpen = dialog === 'settings';
+  const libraryView = settingsOpen ? undefined : dialog;
   const [exportProgress, setExportProgress] = useState<ExportProgress>();
   const [exportJob, setExportJob] = useState<string>();
   const [exportPending, setExportPending] = useState(false);
@@ -78,13 +86,24 @@ export function App() {
   const [originalDucking, setOriginalDucking] = useState(true);
   const [status, setStatus] = useState<EngineStatus>({ state: 'missing', backend: 'none', message: '正在检测本地引擎…' });
   const [modelSetup, setModelSetup] = useState<ModelSetupStatus>();
+  const [setupDismissed, setSetupDismissed] = useState(false);
+  const [setupRequested, setSetupRequested] = useState(false);
+  const [optionalModels, setOptionalModels] = useState<OptionalModelStatus>();
+  const [optionalRequests, setOptionalRequests] = useState<Partial<Record<OptionalModel, boolean>>>({});
+  const [optionalErrors, setOptionalErrors] = useState<Partial<Record<OptionalModel, string>>>({});
+  const [pexelsConfigured, setPexelsConfigured] = useState<boolean>();
   const [modelImportPending, setModelImportPending] = useState(false);
   const [modelImportError, setModelImportError] = useState('');
+  const [modelImportNotice, setModelImportNotice] = useState('');
   const [enginePath, setEnginePath] = useState('');
   const [modelDir, setModelDir] = useState('');
+  const [engineNotice, setEngineNotice] = useState('');
   const [semanticEnginePath, setSemanticEnginePath] = useState('');
   const [semanticModelPath, setSemanticModelPath] = useState('');
+  const [semanticConfigured, setSemanticConfigured] = useState(false);
   const [sceneModelPath, setSceneModelPath] = useState('');
+  const [sceneConfigured, setSceneConfigured] = useState(false);
+  const [sourceAnalysisReady, setSourceAnalysisReady] = useState(false);
   const [sceneModelNotice, setSceneModelNotice] = useState('');
   const [semanticNotice, setSemanticNotice] = useState('');
   const [jobId, setJobId] = useState<string>();
@@ -94,7 +113,6 @@ export function App() {
   const [plan, setPlan] = useState<EditPlan>();
   const [preview, setPreview] = useState<Preview>();
   const [previewError, setPreviewError] = useState<string>();
-  const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [replacingScene, setReplacingScene] = useState<string>();
   const [sceneNotice, setSceneNotice] = useState<{ sceneId: string; message: string }>();
   const [candidateSceneId, setCandidateSceneId] = useState<string>();
@@ -111,21 +129,46 @@ export function App() {
   const [downloadingOnlineId, setDownloadingOnlineId] = useState<string>();
   const candidateSearchToken = useRef(0);
   const playerRef = useRef<HyperframesPlayer>(null);
+
+  async function refreshModelSettings() {
+    const desktop = api();
+    if (!desktop) return;
+    await Promise.all([
+      desktop.optionalModelStatus?.().then(setOptionalModels),
+      desktop.semanticStatus?.().then(result => {
+        setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath); setSemanticConfigured(result.configured);
+      }),
+      desktop.sceneModelStatus?.().then(result => {
+        setSceneModelPath(result.modelPath); setSceneConfigured(result.configured); setSourceAnalysisReady(result.canAnalyzeSource);
+      })
+    ]);
+  }
+
   useEffect(() => {
     const desktop = api();
     if (!desktop?.modelSetupStatus) return;
-    let active = true;
+    let mounted = true;
+    let receivedProgress = false;
     const update = (value: ModelSetupStatus) => {
-      if (!active) return;
+      if (!mounted) return;
       setModelSetup(value);
       if (value.state === 'ready') {
-        void desktop.getStatus().then(result => { if (active) { setStatus(result); setEnginePath(result.enginePath ?? ''); setModelDir(result.modelDir ?? ''); } });
-        void desktop.semanticStatus().then(result => { if (active) { setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath); } });
+        setSetupRequested(false);
+        setSetupDismissed(true);
+        void desktop.getStatus().then(result => {
+          if (!mounted) return;
+          setStatus(result);
+          setEnginePath(previous => previous || result.enginePath || '');
+          setModelDir(previous => previous || result.modelDir || '');
+        }).catch(() => undefined);
       }
     };
-    const unsubscribe = desktop.onModelSetupProgress(update);
-    void desktop.modelSetupStatus().then(update);
-    return () => { active = false; unsubscribe(); };
+    const unsubscribe = desktop.onModelSetupProgress(value => { receivedProgress = true; update(value); });
+    const unsubscribeOptional = desktop.onOptionalModelProgress?.((group, progress) => {
+      setOptionalModels(current => current && { ...current, [group]: { ...current[group], progress } });
+    });
+    void desktop.modelSetupStatus().then(value => { if (!receivedProgress) update(value); }).catch(() => undefined);
+    return () => { mounted = false; unsubscribe(); unsubscribeOptional?.(); };
   }, []);
   useEffect(() => api()?.onExportProgress(event => {
     setExportProgress(event);
@@ -147,9 +190,7 @@ export function App() {
     void desktop.getStatus().then(result => {
       setStatus(result); setEnginePath(result.enginePath ?? ''); setModelDir(result.modelDir ?? '');
     });
-    void desktop.semanticStatus().then(result => { setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath); }).catch(() => undefined);
-    if (desktop.sceneModelStatus) void desktop.sceneModelStatus().then(result => setSceneModelPath(result.modelPath)).catch(() => undefined);
-    void desktop.listAssets().then(setAssets);
+    void refreshModelSettings().catch(() => undefined);
     void desktop.listVoices().then(setClonedVoices);
     void desktop.resumeLastProject().then(last => {
       if (!last || receivedCompositionProgress) return;
@@ -166,12 +207,15 @@ export function App() {
       setProgress(event);
       if (event.plan) setPlan(event.plan);
       if (event.preview) { setPreview(event.preview); setPreviewError(undefined); }
-      if (event.phase === 'complete') void desktop.listAssets().then(setAssets).catch(() => undefined);
+      if (event.phase === 'complete') void refreshAssets().catch(() => undefined);
       if (event.phase === 'complete' || event.phase === 'error' || event.phase === 'cancelled') {
         jobRef.current = undefined; setJobId(undefined);
       }
     });
   }, []);
+  useEffect(() => {
+    if (settingsOpen) void api()?.pexelsStatus?.().then(result => setPexelsConfigured(result.configured)).catch(() => undefined);
+  }, [settingsOpen]);
 
   useEffect(() => {
     const player = playerRef.current;
@@ -193,6 +237,8 @@ export function App() {
   const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending || captionBusy;
   const modelsPending = !!modelSetup && !['ready', 'bundled'].includes(modelSetup.state);
   const modelSetupLabel = modelSetup?.state === 'error' ? '模型准备失败' : '正在准备模型';
+  const showSetup = modelsPending && !dialog && !candidateSceneId && !cloneOpen &&
+    (setupRequested || (active && !setupDismissed && (modelSetup.state !== 'checking' || modelSetup.activity === 'importing')));
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
@@ -221,12 +267,12 @@ export function App() {
   async function generate() {
     const desktop = api();
     if (!desktop) {
-      setProgress({ jobId: 'browser', phase: 'error', progress: 0, message: '请在 VoxWeave 桌面应用中运行。', recoverable: true });
+      setProgress({ jobId: 'browser', phase: 'error', progress: 0, message: '请在帧舟桌面应用中运行。', recoverable: true });
       return;
     }
     if (modelsPending) return;
     if (plan && preview && !compositionDirty && audioDirty) { await applyAudio(); return; }
-    if (status.state === 'missing') { setSettingsOpen(true); return; }
+    if (status.state === 'missing') { openDialog('settings'); return; }
     setGeneratePending(true);
     setPreviewError(undefined); setPreview(undefined); setPlan(undefined);
     setExportProgress(undefined);
@@ -257,7 +303,7 @@ export function App() {
       const imported = await api()!.importAsset(selected);
       setSourceVideoPath(imported.filePath); setSourceError('');
       if (imported.hasAudio === false) setOriginalEnabled(false);
-      setAssets(await api()!.listAssets());
+      await refreshAssets();
     } catch (error) { setSourceError(error instanceof Error ? error.message : String(error)); }
   }
 
@@ -308,7 +354,7 @@ export function App() {
       const desktop = api()!;
       const status = await desktop.pexelsStatus();
       if (token !== candidateSearchToken.current) return;
-      if (!status.configured) { setOnlineError('配置 Pexels API Key 后，可在这里同时查找视频和图片。'); return; }
+      if (!status.configured) { setOnlineError('填写 Pexels 密钥后，可在这里查找视频和图片。'); return; }
       const orientation = plan?.scenes.find(scene => scene.id === sceneId)?.visual.intent.orientation;
       const results = await Promise.allSettled(['video', 'image'].map(type => desktop.searchPexels({
         query, type: type as 'video' | 'image', page: 1, orientation
@@ -354,7 +400,7 @@ export function App() {
     setDownloadingOnlineId(item.id); setCandidateError('');
     try {
       const asset = await api()!.downloadPexels(item.id);
-      setAssets(await api()!.listAssets());
+      await refreshAssets();
       await replaceScene(candidateSceneId, { type: 'asset', assetId: asset.id,
         sourceInMs: asset.type === 'video' ? 0 : undefined, throughSceneId: candidateThroughSceneId });
     } catch (error) { setCandidateError(error instanceof Error ? error.message : String(error)); }
@@ -375,14 +421,20 @@ export function App() {
   }
 
   async function configure() {
-    const next = await api()?.configure({ enginePath, modelDir });
-    if (next) { setStatus(next); if (next.state === 'idle') setSettingsOpen(false); }
+    setEngineNotice('');
+    try {
+      const next = await api()?.configure({ enginePath, modelDir });
+      if (next) { setStatus(next); setEngineNotice(next.message); }
+    } catch (error) { setEngineNotice(error instanceof Error ? error.message : String(error)); }
   }
 
   async function importLocalModels() {
     setModelImportPending(true);
     setModelImportError('');
-    try { await api()?.importLocalModels(); }
+    setModelImportNotice('');
+    try {
+      if (await api()?.importLocalModels() && !modelsPending) setModelImportNotice('已选好文件夹。准备其他功能时，会先复用这里的模型。');
+    }
     catch (error) { setModelImportError(error instanceof Error ? error.message : String(error)); }
     finally { setModelImportPending(false); }
   }
@@ -392,7 +444,9 @@ export function App() {
     try {
       const result = await api()!.configureSemantic({ enginePath, modelPath });
       setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath);
-      setSemanticNotice(result.configured ? '本地语义检索已配置；首次检索会加载模型。' : '已关闭本地语义检索。');
+      setSemanticConfigured(result.configured);
+      void api()?.optionalModelStatus?.().then(setOptionalModels).catch(() => undefined);
+      setSemanticNotice(result.configured ? '已启用按意思搜索。' : '已切换到关键词搜索。');
     } catch (error) { setSemanticNotice(error instanceof Error ? error.message : String(error)); }
   }
 
@@ -401,36 +455,60 @@ export function App() {
     try {
       const result = await api()!.configureSceneModel(modelPath);
       setSceneModelPath(result.modelPath);
-      setSceneModelNotice(result.configured ? '文案分镜模型已配置；生成时会按文案自动规划画面。' : '已关闭文案分镜模型，将使用关键词规则。');
+      setSceneConfigured(result.configured);
+      setSourceAnalysisReady(result.canAnalyzeSource);
+      void api()?.optionalModelStatus?.().then(setOptionalModels).catch(() => undefined);
+      setSceneModelNotice(result.configured ? '已启用智能分镜。' : '已切换到关键词匹配。');
     } catch (error) { setSceneModelNotice(error instanceof Error ? error.message : String(error)); }
   }
 
-  return <div className="app-shell">
-    <header className="topbar drag-region">
-      <div className="brand no-drag"><span className="brand-mark"><AudioLines size={19}/></span><strong>声织</strong><small>VOXWEAVE</small></div>
-      <div className="top-actions no-drag">
-        <button className="library-button" aria-label={`素材库，${assets.length} 个素材`} onClick={() => setLibraryView('all')}><Library size={16}/> <em>素材库</em> <span>{assets.length}</span></button>
-        <button className={`engine-pill ${modelsPending && modelSetup.state === 'error' ? 'missing' : status.state}`} onClick={() => setSettingsOpen(true)}><i/>{modelsPending ? modelSetupLabel : status.state === 'idle' ? '本地引擎就绪' : '配置引擎'}</button>
-        <button className="icon-button" aria-label="打开引擎设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18}/></button>
-      </div>
-    </header>
+  async function prepareOptionalModel(group: OptionalModel) {
+    const desktop = api();
+    if (!desktop?.prepareOptionalModel) return;
+    setOptionalRequests(current => ({ ...current, [group]: true }));
+    setOptionalErrors(current => ({ ...current, [group]: undefined }));
+    if (group === 'scene') setSceneModelNotice('');
+    if (group === 'search') setSemanticNotice('');
+    try {
+      await desktop.prepareOptionalModel(group);
+      await refreshModelSettings();
+    } catch (error) {
+      setOptionalErrors(current => ({ ...current, [group]: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setOptionalRequests(current => ({ ...current, [group]: false }));
+    }
+  }
 
+  function optionalModelAction(group: OptionalModel, enabled: boolean) {
+    const model = optionalModels?.[group];
+    if (!model) return null;
+    const progress = model.progress;
+    const pending = optionalRequests[group];
+    if (progress && ['checking', 'downloading'].includes(progress.state)) return <ModelProgress status={progress}/>;
+    const failure = !model.installed && progress?.state === 'error';
+    return <>
+      {failure && <ModelProgress status={progress}/>}
+      {optionalErrors[group] && !failure && <p className="field-error" role="alert">{optionalErrors[group]}</p>}
+      {!enabled && (model.downloadable || model.installed) && <div className="model-actions">
+        <button className="secondary-button" disabled={pending} onClick={() => void prepareOptionalModel(group)}>
+          {!pending && !model.installed && <Download size={15}/>}
+          {pending ? '正在准备…' : model.installed ? '启用' : failure ? '重试下载' : `${group === 'clone' ? '下载' : '下载并启用'} · ${modelSizes[group]}`}
+        </button>
+      </div>}
+    </>;
+  }
+
+  function closeSetup() { setSetupDismissed(true); setSetupRequested(false); }
+  function retryBasicModels() { setModelImportError(''); void api()?.retryModelSetup(); }
+  function openOnlineLibrary() {
+    candidateSearchToken.current++;
+    closeSetup(); setCandidateSceneId(undefined); openDialog('online');
+  }
+
+  return <div className="app-shell">
     {modelsPending && <section className="model-setup" aria-label="准备创作模型">
-      <div role="status"><strong>{modelSetup.state === 'error' ? modelSetupLabel : '首次使用需要准备创作模型'}</strong><p>{modelSetup.message}</p>
-        <small>已有模型可从本地导入。在线准备约 9 GB，支持断点续传。</small>
-        <p>已准备 {modelSetup.completedFiles} / {modelSetup.totalFiles} 个文件
-          {modelSetup.state === 'downloading' && <> · {(modelSetup.downloadedBytes / 1024 ** 2).toFixed(1)} MiB
-            {modelSetup.totalBytes ? ` / ${(modelSetup.totalBytes / 1024 ** 2).toFixed(1)} MiB` : ''}</>}</p>
-        <progress aria-label="模型准备进度" value={modelSetup.completedFiles} max={modelSetup.totalFiles || 1}/>
-        {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
-      </div>
-      <div className="model-setup-actions">
-        <button className="secondary-button" disabled={modelImportPending} onClick={() => void importLocalModels()}><FolderOpen size={15}/> 导入本地模型</button>
-        {modelSetup.state === 'error' && <button className="secondary-button" disabled={modelImportPending} onClick={() => {
-          setModelImportError('');
-          void api()?.retryModelSetup();
-        }}><RefreshCw size={15}/> 重试下载</button>}
-      </div>
+      <span>{modelSetup.state === 'error' ? '配音和字幕准备失败' : '正在准备配音和字幕，你可以先写文案。'}</span>
+      <button className="text-action" onClick={() => setSetupRequested(true)}>查看进度</button>
     </section>}
 
     <main className={`creator-layout ${plan ? 'has-storyboard' : ''}`}>
@@ -449,7 +527,12 @@ export function App() {
             : <button className="secondary-button" onClick={chooseSource} disabled={working}><Upload size={15}/> 添加视频</button>}
         </div>
         {sourceError && <p className="field-error" role="alert">原始视频入库失败：{sourceError}</p>}
-        {sourceVideoPath && <p className="candidate-message">在本机分析原片画面和语音，按旁白匹配片段；不足时优先补视频，图片最多停留 2 秒。</p>}
+        {sourceVideoPath && <div className="source-model-prompt">
+          <p className="candidate-message">{sourceAnalysisReady ? '应用会根据旁白，从原片画面和原声中挑选合适片段。' : '想从原片里自动挑片段？启用智能选段。'}</p>
+          {!sourceAnalysisReady && (optionalModels?.scene.downloadable || optionalModels?.scene.installed
+            ? optionalModelAction('scene', false)
+            : <button className="text-action" onClick={() => openDialog('settings')}>查看创作设置</button>)}
+        </div>}
 
         <button className="more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><Settings2 size={15}/> 更多设置{plan && preview ? ' · 音轨' : ''} <ChevronDown size={15}/></button>
         {moreOpen && <div className="settings-grid">
@@ -468,7 +551,7 @@ export function App() {
               {sourceAsset?.hasAudio === false ? <small>原视频没有音轨。</small> : <small>原声随选中的原片段剪辑；更换画面时保留这条原声音轨。</small>}
               {originalEnabled && <><label>原声音量 {Math.round(originalVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={originalVolume} disabled={working} onChange={event => setOriginalVolume(Number(event.target.value))}/></label><label><input type="checkbox" checked={originalDucking} disabled={working} onChange={event => setOriginalDucking(event.target.checked)}/> 旁白说话时降低原声音量</label></>}
             </>}
-            <label>背景音乐<select disabled={working} value={bgmAsset} onChange={event => setBgmAsset(event.target.value)}><option value="">不添加配乐</option>{assets.filter(asset => asset.type === 'audio').map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button onClick={() => setLibraryView('audio')}>导入 BGM</button></label>
+            <label>背景音乐<select disabled={working} value={bgmAsset} onChange={event => setBgmAsset(event.target.value)}><option value="">不添加配乐</option>{assets.filter(asset => asset.type === 'audio').map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select><button onClick={() => openDialog('audio')}>导入 BGM</button></label>
             {!assets.some(asset => asset.type === 'audio') && <small>素材库中还没有音频，导入 BGM 后即可选择配乐。</small>}
             {bgmAsset && <><label>配乐音量 {Math.round(bgmVolume * 100)}%<input type="range" min="0" max="2" step="0.01" value={bgmVolume} disabled={working} onChange={event => setBgmVolume(Number(event.target.value))}/></label><label><input type="checkbox" checked={bgmDucking} disabled={working} onChange={event => setBgmDucking(event.target.checked)}/> 旁白说话时降低配乐音量</label></>}
           </div>}
@@ -588,7 +671,7 @@ export function App() {
         <h3 className="candidate-section-title">Pexels 在线素材 <small>同时搜索视频和图片；只在选择后下载。<button onClick={() => void api()?.openSource('https://www.pexels.com/')}>素材由 Pexels 提供</button></small></h3>
         {onlineLoading && <p className="candidate-message" role="status">正在搜索 Pexels 视频和图片…</p>}
         {onlineQuery && <p className="candidate-message">Pexels 搜索词：{onlineQuery}</p>}
-        {onlineError && <p className="candidate-message" role="status">{onlineError} <button onClick={() => { setCandidateSceneId(undefined); setLibraryView('all'); }}>打开素材库设置</button></p>}
+        {onlineError && <p className="candidate-message" role="status">{onlineError} <button onClick={openOnlineLibrary}>查看在线素材选项</button></p>}
         {!!onlineCandidates.length && <div className="candidate-online-grid">{onlineCandidates.map(item => {
           const tooShort = item.type === 'video' && (item.durationMs ?? 0) < candidateDurationMs;
           return <article key={item.id} className="candidate-online-card">
@@ -603,43 +686,111 @@ export function App() {
       </>}
     </Modal>}
 
-    {cloneOpen && <Modal title="克隆音色" subtitle="选择有权使用的参考音频，使用本机 Base 模型生成可复用音色" close={() => !cloneBusy && setCloneOpen(false)}>
-      <div className="settings-form">
+    {cloneOpen && <Modal title="克隆音色" subtitle="用一段参考录音制作自己的旁白音色。" close={() => !cloneBusy && setCloneOpen(false)}>
+      {optionalModels && !optionalModels.clone.installed ? <div className="settings-form">
+        <p>{optionalModels.clone.downloadable ? '首次使用需准备音色克隆，下载完成后就可以选择录音。' : '当前版本缺少音色克隆所需的模型。'}</p>
+        {optionalModelAction('clone', false)}
+      </div> : <div className="settings-form">
         <label className="clone-field">音色名称<input value={cloneName} maxLength={60} onChange={event => setCloneName(event.target.value)} placeholder="例如：我的旁白"/></label>
         <label className="clone-field">参考音频<div><input readOnly value={cloneReference} placeholder="建议 5–20 秒清晰单人语音"/><button onClick={async () => { const selected = await api()?.chooseFile('audio'); if (selected) setCloneReference(selected); }}>选择音频</button></div></label>
         {cloneError && <p className="field-error" role="alert">{cloneError}</p>}
         <button className="modal-primary" disabled={cloneBusy || !cloneName.trim() || !cloneReference} onClick={createClone}>{cloneBusy ? '正在克隆…' : '创建并使用音色'}</button>
+      </div>}
+    </Modal>}
+
+    {libraryView && <Modal title="素材库" subtitle={libraryView === 'audio' ? '导入音频后，回到背景音乐下拉框选择配乐' : '整理画面、图片与声音，两种创作模式都可以使用。'} close={() => openDialog()} wide workspace>
+      <LibraryPanel initialTab={libraryView === 'online' ? 'online' : undefined} initialType={libraryView === 'audio' ? 'audio' : undefined} changed={refreshAssets}
+        useBgm={active && plan && preview && !working ? asset => { setBgmAsset(asset.id); openDialog(); } : undefined}/>
+    </Modal>}
+
+    {showSetup && <Modal title="准备配音和字幕" subtitle="基础模型约占 4.8 GB，下载可断点续传。" close={closeSetup} className="creation-settings" workspace>
+      <div className="settings-form">
+        <ModelProgress status={modelSetup}/>
+        {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
+        <div className="model-actions">
+          {modelSetup.state === 'error' && <button className="modal-primary" disabled={modelImportPending} onClick={retryBasicModels}><RefreshCw size={15}/> 重试下载</button>}
+          <button className={modelSetup.state === 'error' ? 'secondary-button' : 'modal-primary'} onClick={closeSetup}>{modelSetup.state === 'error' ? '返回创作' : '后台继续'}</button>
+          <button className="secondary-button" disabled={modelImportPending} onClick={() => void importLocalModels()}><FolderOpen size={15}/> 导入已有模型</button>
+        </div>
+        <p>缺画面时，可在素材库用 <button className="text-action" onClick={openOnlineLibrary}>在线素材</button> 补充。</p>
       </div>
     </Modal>}
 
-    {libraryView && <Modal title="素材库" subtitle={libraryView === 'audio' ? '导入音频后，回到背景音乐下拉框选择配乐' : '整理画面、图片与声音，为下一条视频积累素材'} close={() => setLibraryView(undefined)} wide>
-      <LibraryPanel initialType={libraryView === 'audio' ? 'audio' : undefined} changed={async () => setAssets(await api()!.listAssets())}
-        useBgm={plan && preview && !working ? asset => { setBgmAsset(asset.id); setLibraryView(undefined); } : undefined}/>
-    </Modal>}
-
-    {settingsOpen && <Modal title="本地引擎设置" subtitle="旁白、文案分镜和可选语义检索都在本机运行" close={() => setSettingsOpen(false)}>
-      <div className="settings-form"><PathField label="引擎路径" value={enginePath} placeholder="qwen_tts.exe 或 WSL 可执行文件" choose={async () => { const selected = await api()?.chooseFile('engine'); if (selected) setEnginePath(selected); }}/><PathField label="旁白模型目录" value={modelDir} placeholder="qwen3-tts-1.7b-customvoice" choose={async () => { const selected = await api()?.chooseFile('model'); if (selected) setModelDir(selected); }}/>
-        <div className={`engine-summary ${status.state}`}><i/><span><b>{status.message}</b><small>文本与媒体只在本机处理。</small></span></div><button className="modal-primary" onClick={configure}>保存并检测旁白引擎</button>
-        <div className="semantic-settings"><b>本地语义检索（可选）</b><small>使用 llama.cpp 的 CPU 运行器和 Qwen3 Embedding GGUF；只比较素材已有文字信息，不识别视频画面。</small></div>
-        <PathField label="llama-server 路径" value={semanticEnginePath} placeholder="选择 llama-server.exe" choose={async () => { const selected = await api()?.chooseFile('semantic-engine'); if (selected) setSemanticEnginePath(selected); }}/>
-        <PathField label="Embedding GGUF 路径" value={semanticModelPath} placeholder="选择 Qwen3-Embedding-0.6B.gguf" choose={async () => { const selected = await api()?.chooseFile('semantic-model'); if (selected) setSemanticModelPath(selected); }}/>
-        {semanticNotice && <p className="candidate-message" role="status">{semanticNotice}</p>}
-        <div className="semantic-actions"><button className="modal-primary" disabled={!semanticEnginePath || !semanticModelPath} onClick={() => void configureSemantic()}>启用语义检索</button><button onClick={() => void configureSemantic('', '')}>关闭</button></div>
-        <div className="semantic-settings"><b>文案分镜模型</b><small>使用 Qwen3.5-4B GGUF 理解文案；有原视频时，配合视觉投影文件在本机分析抽帧，并转写原声来选段。分析不会上传素材。便携包包含模型和视觉投影文件。</small></div>
-        <PathField label="Qwen3.5-4B GGUF" value={sceneModelPath} placeholder="选择本地 .gguf 模型文件" choose={async () => { const selected = await api()?.chooseFile('scene-model'); if (selected) setSceneModelPath(selected); }}/>
-        {sceneModelNotice && <p className="candidate-message" role="status">{sceneModelNotice}</p>}
-        <div className="semantic-actions"><button className="modal-primary" disabled={!sceneModelPath} onClick={() => void configureSceneModel()}>保存分镜模型</button><button onClick={() => void configureSceneModel('')}>使用关键词规则</button></div>
+    {settingsOpen && <Modal title="创作设置" subtitle="配音、字幕和智能选段都在本机处理。" close={() => openDialog()} className="creation-settings" workspace>
+      <div className="settings-form">
+        <Feature title="自动配音和字幕" description="把文案读成旁白，让字幕跟着声音走。"
+          status={modelsPending ? modelSetupLabel : status.state === 'idle' ? '已就绪' : '待配置'} ready={!modelsPending && status.state === 'idle'}>
+          {modelsPending && <div className="model-actions">
+            <button className="secondary-button" onClick={() => { openDialog(); setSetupRequested(true); }}>查看进度</button>
+          </div>}
+        </Feature>
+        <Feature title="智能分镜和原片选段" description="根据文案规划画面，有原片时自动找合适的片段。"
+          status={sourceAnalysisReady ? '已启用' : sceneConfigured ? '仅文案分镜' : optionalModels?.scene.installed ? '已关闭' : '可选'} ready={sourceAnalysisReady}>
+          {optionalModelAction('scene', sourceAnalysisReady)}
+        </Feature>
+        <Feature title="按意思找本地素材" description="换画面时，搜「上班路上」也能找到标着「通勤」的片段。"
+          status={semanticConfigured ? '已启用' : optionalModels?.search.installed ? '已关闭' : '可选'} ready={semanticConfigured}>
+          {optionalModelAction('search', semanticConfigured)}
+        </Feature>
+        <Feature title="克隆自己的声音" description="用一段参考录音制作专属旁白音色。"
+          status={optionalModels?.clone.installed ? '已就绪' : '可选'} ready={optionalModels?.clone.installed}>
+          {optionalModelAction('clone', Boolean(optionalModels?.clone.installed))}
+        </Feature>
+        <Feature title="在线补画面" description="本地素材不够时，从 Pexels 找视频和图片补上。"
+          status={pexelsConfigured ? '已填写密钥' : '可选'} ready={pexelsConfigured}>
+          <div className="model-actions"><button className="secondary-button" onClick={openOnlineLibrary}>查看在线素材选项</button></div>
+        </Feature>
+        {modelSetup && modelSetup.state !== 'bundled' && <div>
+          <button className="text-action" disabled={modelImportPending} onClick={() => void importLocalModels()}>导入已有模型</button>
+          {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
+          {modelImportNotice && <p role="status">{modelImportNotice}</p>}
+        </div>}
+        <details className="advanced-settings">
+          <summary>高级设置 · 手动指定模型</summary>
+          <div className="settings-form">
+            <PathField label="旁白引擎文件" value={enginePath} placeholder="qwen_tts.exe 或 WSL 可执行文件" choose={async () => { const selected = await api()?.chooseFile('engine'); if (selected) setEnginePath(selected); }}/>
+            <PathField label="旁白模型目录" value={modelDir} placeholder="qwen3-tts-1.7b-customvoice" choose={async () => { const selected = await api()?.chooseFile('model'); if (selected) setModelDir(selected); }}/>
+            <p role="status">{engineNotice || (modelsPending ? modelSetupLabel : status.message)}</p>
+            <div className="model-actions"><button className="secondary-button" onClick={configure}>保存并检测旁白</button></div>
+            <PathField label="分镜模型文件" value={sceneModelPath} placeholder="选择本地 .gguf 模型文件" choose={async () => { const selected = await api()?.chooseFile('scene-model'); if (selected) setSceneModelPath(selected); }}/>
+            {sceneModelNotice && <p role="status">{sceneModelNotice}</p>}
+            <div className="model-actions">
+              <button className="secondary-button" disabled={!sceneModelPath || working || optionalRequests.scene} onClick={() => void configureSceneModel()}>保存分镜模型</button>
+              {sceneConfigured && <button className="text-action" disabled={working || optionalRequests.scene} onClick={() => void configureSceneModel('')}>关闭智能分镜</button>}
+            </div>
+            <PathField label="本地搜索运行程序" value={semanticEnginePath} placeholder="选择 llama-server.exe" choose={async () => { const selected = await api()?.chooseFile('semantic-engine'); if (selected) setSemanticEnginePath(selected); }}/>
+            <PathField label="本地搜索模型文件" value={semanticModelPath} placeholder="选择本地 .gguf 模型文件" choose={async () => { const selected = await api()?.chooseFile('semantic-model'); if (selected) setSemanticModelPath(selected); }}/>
+            {semanticNotice && <p role="status">{semanticNotice}</p>}
+            <div className="model-actions">
+              <button className="secondary-button" disabled={!semanticEnginePath || !semanticModelPath || optionalRequests.search} onClick={() => void configureSemantic()}>保存搜索模型</button>
+              {semanticConfigured && <button className="text-action" disabled={optionalRequests.search} onClick={() => void configureSemantic('', '')}>切回关键词搜索</button>}
+            </div>
+          </div>
+        </details>
       </div>
     </Modal>}
   </div>;
+}
+
+function Feature({ title, description, status, ready, children }: {
+  title: string; description: string; status: string; ready?: boolean; children?: React.ReactNode;
+}) {
+  return <section className="creation-feature">
+    <header><h3>{title}</h3><span className={ready ? 'feature-ready' : undefined}>{status}</span></header>
+    <p>{description}</p>
+    {children}
+  </section>;
 }
 
 function PathField({ label, value, placeholder, choose }: { label: string; value: string; placeholder: string; choose: () => void }) {
   return <label className="path-field"><span>{label}</span><div><input readOnly value={value} placeholder={placeholder}/><button onClick={choose}><FolderOpen size={15}/> 浏览</button></div></label>;
 }
 
-function Modal({ title, subtitle, close, children, wide }: { title: string; subtitle: string; close: () => void; children: React.ReactNode; wide?: boolean }) {
+function Modal({ title, subtitle, close, children, wide, className = '', workspace }: {
+  title: string; subtitle: string; close: () => void; children: React.ReactNode; wide?: boolean; className?: string; workspace?: boolean;
+}) {
   const ref = useRef<HTMLElement>(null);
+  const titleId = useId();
   const closeRef = useRef(close); closeRef.current = close;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -655,5 +806,6 @@ function Modal({ title, subtitle, close, children, wide }: { title: string; subt
     document.addEventListener('keydown', keydown);
     return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
   }, []);
-  return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && close()}><section ref={ref} className={`modal ${wide ? 'library-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><header><div><h2 id="modal-title">{title}</h2><p>{subtitle}</p></div><button className="icon-button" aria-label="关闭" onClick={close}><X size={18}/></button></header>{children}</section></div>;
+  const modal = <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && close()}><section ref={ref} className={`modal ${wide ? 'library-modal' : ''} ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}><header><div><h2 id={titleId}>{title}</h2><p>{subtitle}</p></div><button className="icon-button" aria-label="关闭" onClick={close}><X size={18}/></button></header>{children}</section></div>;
+  return workspace ? createPortal(modal, document.body) : modal;
 }

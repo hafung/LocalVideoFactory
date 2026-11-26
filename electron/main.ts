@@ -1,7 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell, safeStorage, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, shell, safeStorage, type WebContents } from 'electron';
 import Store from 'electron-store';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile, rm, rename, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -29,10 +29,12 @@ import { fillOnlineMedia, type AutomaticMediaProvider } from './library/automati
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
 import { ModelDownloader, type LocalModelSources } from './model-downloads.js';
+import { modelGroup, ModelDownloadsSchema, OPTIONAL_MODELS, type OptionalModel, type OptionalModelStatus } from '../shared/model-downloads.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
 import { CaptionHighlightSchema } from '../shared/edit-plan.js';
 import { updateCaptionHighlight } from './composition/caption-editing.js';
 import { AssetTypeSchema, ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, type ImportReport } from '../shared/library.js';
+import { PIXABAY_VIDEO_PAGE } from '../shared/library.js';
 import { searchAssets } from './library/search.js';
 import { refreshedAutomaticTags } from './library/tags.js';
 import { PexelsClient, assertPexelsUrl } from './library/pexels.js';
@@ -68,19 +70,37 @@ const allowedShellPaths = new Set<string>();
 const projectLocks = new Set<string>();
 const exportJobs = new Map<string, { renderer: HyperframesPreviewRenderer; cancelled: boolean }>();
 let modelDownloader: ModelDownloader | undefined;
+let modelCatalog: string | undefined;
+const downloadableModels = new Set<OptionalModel>();
+const optionalDownloads = new Map<OptionalModel, ModelDownloader>();
 const bundledModelStatus = { state: 'bundled' as const, message: '使用内置模型', completedFiles: 0, totalFiles: 0, downloadedBytes: 0 };
+const modelRequest: typeof fetch = (input, options) => net.fetch(input instanceof URL ? input.href : input, options);
+
+function broadcast(channel: string, ...args: unknown[]): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(channel, ...args);
+  }
+}
 
 function initializeModelDownloader(): void {
   const catalog = path.join(resourceRoot(), 'model-downloads.json');
   if (!app.isPackaged || !existsSync(catalog)) return;
+  modelCatalog = catalog;
+  try {
+    const files = ModelDownloadsSchema.parse(JSON.parse(readFileSync(catalog, 'utf8'))).files;
+    for (const group of OPTIONAL_MODELS) {
+      if (files.some(file => modelGroup(file.path) === group)) downloadableModels.add(group);
+    }
+  } catch { /* The basic model download reports a malformed catalog. */ }
   let lastMessage = '';
   modelDownloader = new ModelDownloader(catalog, path.join(app.getPath('userData'), 'model-resources'), status => {
     if (cliMode && status.message !== lastMessage) { console.error(status.message); lastMessage = status.message; }
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send('models:progress', status);
-    }
-  }, (input, options) => net.fetch(input instanceof URL ? input.href : input, options), localModelSources);
-  app.on('before-quit', () => modelDownloader?.cancel());
+    broadcast('models:progress', status);
+  }, modelRequest, localModelSources, 'basic');
+  app.on('before-quit', () => {
+    modelDownloader?.cancel();
+    for (const downloader of optionalDownloads.values()) downloader.cancel();
+  });
 }
 
 function modelRoot(): string { return modelDownloader?.root ?? resourceRoot(); }
@@ -134,7 +154,8 @@ function localModelSources(): LocalModelSources {
       roots.push(path.dirname(semantic));
     }
   }
-  return { roots, narrationModelDir, embeddingModelPath };
+  return { roots, narrationModelDir, embeddingModelPath,
+    sceneModelPath: process.env.VOXWEAVE_SCENE_MODEL || settings.get('sceneModelPath') };
 }
 
 function configuredPaths() {
@@ -149,17 +170,59 @@ function configuredPaths() {
   };
 }
 
-function semanticPaths(): { enginePath?: string; modelPath?: string } {
-  if (settings.get('semanticEnabled') === false) return {};
+function semanticPaths(includeDisabled = false): { enginePath?: string; modelPath?: string } {
+  if (!includeDisabled && settings.get('semanticEnabled') === false) return {};
   const root = path.join(resourceRoot(), 'semantic');
-  const enginePath = settings.get('semanticEnginePath') || path.join(root, 'runtime', 'llama-server.exe');
-  const modelPath = settings.get('semanticModelPath') || path.join(modelRoot(), 'semantic', 'model', 'Qwen3-Embedding-0.6B-Q8_0.gguf');
+  const engineOverride = settings.get('semanticEnginePath');
+  const modelOverride = settings.get('semanticModelPath');
+  const enginePath = engineOverride && existsSync(engineOverride) ? engineOverride : path.join(root, 'runtime', 'llama-server.exe');
+  const modelPath = modelOverride && existsSync(modelOverride) ? modelOverride : path.join(modelRoot(), 'semantic', 'model', 'Qwen3-Embedding-0.6B-Q8_0.gguf');
   return existsSync(enginePath) && existsSync(modelPath) ? { enginePath, modelPath } : {};
 }
 
-function sceneModelPaths() {
+function sceneModelPaths(includeDisabled = false) {
   return resolveSceneModelPaths(resourceRoot(), modelRoot(), process.env.VOXWEAVE_SCENE_MODEL || settings.get('sceneModelPath'),
-    settings.get('sceneModelEnabled') === false, settings.get('semanticEnginePath'));
+    !includeDisabled && settings.get('sceneModelEnabled') === false, settings.get('semanticEnginePath'));
+}
+
+function cloneModelReady(): boolean {
+  const directory = path.join(modelRoot(), 'models', CLONE_TTS_MODEL);
+  return ['config.json', 'model.safetensors'].every(name => existsSync(path.join(directory, name))) &&
+    (!modelDownloader || existsSync(path.join(directory, 'manifest.json')));
+}
+
+function optionalModelStatus(): OptionalModelStatus {
+  const entry = (group: OptionalModel, installed: boolean) => ({
+    installed, downloadable: downloadableModels.has(group), progress: optionalDownloads.get(group)?.status
+  });
+  return {
+    scene: entry('scene', Boolean(sceneModelPaths(true).projectorPath)),
+    search: entry('search', Boolean(semanticPaths(true).modelPath)),
+    clone: entry('clone', cloneModelReady())
+  };
+}
+
+async function prepareOptionalModel(group: OptionalModel): Promise<void> {
+  let downloader = optionalDownloads.get(group);
+  if (downloader?.active || !optionalModelStatus()[group].installed) {
+    if (!modelCatalog || !downloadableModels.has(group)) throw new Error('当前版本没有这项功能的下载资源。');
+    let lastMessage = '';
+    downloader ??= new ModelDownloader(modelCatalog, modelRoot(), status => {
+      if (cliMode) {
+        if (lastMessage !== status.message) console.error(status.message);
+        lastMessage = status.message;
+      }
+      else broadcast('models:optional-progress', group, status);
+    }, modelRequest, localModelSources, group);
+    optionalDownloads.set(group, downloader);
+    await downloader.start();
+    if (downloader.status.state !== 'ready') throw new Error(downloader.status.message);
+  }
+  if (group === 'scene') {
+    if (downloader?.status.state === 'ready' && !sceneModelPaths(true).projectorPath) settings.delete('sceneModelPath');
+    settings.set('sceneModelEnabled', true);
+  }
+  if (group === 'search') settings.set('semanticEnabled', true);
 }
 
 function configuredEngine(overrideModelDir?: string): QwenEngine {
@@ -327,26 +390,27 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
 }
 
 function createWindow(): void {
+  if (process.platform === 'win32') app.setAppUserModelId('studio.voxweave.app');
+  const icon = nativeImage.createFromPath(path.join(app.getAppPath(), 'build', 'icon.png'));
   const splash = new BrowserWindow({
     width: 430, height: 270, frame: false, resizable: false, show: false,
-    alwaysOnTop: true, center: true, backgroundColor: '#0c0d10',
+    alwaysOnTop: true, center: true, skipTaskbar: true, backgroundColor: '#0c0d10',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
   const splashHtml = `<!doctype html><html><head><meta charset="utf-8"><style>
     *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}
     body{font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;color:#f4f4f2;background:radial-gradient(circle at 50% 25%,#202817 0,#11140f 35%,#0c0d10 72%);display:grid;place-items:center}
-    .shell{text-align:center;transform:translateY(-3px)}.logo{width:74px;height:74px;margin:0 auto 19px;border-radius:22px;background:#d9ff69;color:#111;display:grid;place-items:center;box-shadow:0 0 0 0 rgba(217,255,105,.3);animation:pulse 1.8s ease-out infinite}
-    .bars{height:29px;display:flex;align-items:center;gap:4px}.bars i{display:block;width:4px;border-radius:4px;background:#111;animation:wave 1s ease-in-out infinite}.bars i:nth-child(1),.bars i:nth-child(5){height:12px}.bars i:nth-child(2),.bars i:nth-child(4){height:21px;animation-delay:.12s}.bars i:nth-child(3){height:29px;animation-delay:.24s}
-    h1{font-size:20px;letter-spacing:.04em;margin:0 0 6px}h1 span{color:#82868d;font-size:11px;font-weight:500;letter-spacing:.12em;margin-left:7px}p{margin:0;color:#858990;font-size:11px}
+    .shell{text-align:center;transform:translateY(-3px)}.logo{display:block;width:74px;height:74px;margin:0 auto 19px}
+    h1{font-size:20px;letter-spacing:.04em;margin:0 0 6px}h1 span{color:#b3b9ad;font-size:13px;font-weight:500;margin-left:5px}p{margin:0;color:#858990;font-size:11px}
     .loader{width:178px;height:3px;margin:22px auto 0;background:#24272b;border-radius:5px;overflow:hidden}.loader:after{content:"";display:block;width:45%;height:100%;border-radius:5px;background:#d9ff69;animation:load 1.25s ease-in-out infinite}
-    @keyframes wave{0%,100%{transform:scaleY(.58)}50%{transform:scaleY(1)}}@keyframes pulse{65%,100%{box-shadow:0 0 0 22px rgba(217,255,105,0)}}@keyframes load{0%{transform:translateX(-105%)}100%{transform:translateX(325%)}}
-  </style></head><body><div class="shell"><div class="logo"><div class="bars"><i></i><i></i><i></i><i></i><i></i></div></div><h1>声织 <span>VOXWEAVE</span></h1><p>正在唤醒本地成片引擎…</p><div class="loader"></div></div></body></html>`;
+    @keyframes load{0%{transform:translateX(-105%)}100%{transform:translateX(325%)}}
+  </style></head><body><div class="shell"><img class="logo" src="${icon.toDataURL()}" alt=""><h1>帧舟 <span>FrameSkiff</span></h1><p>正在启动创作工作台…</p><div class="loader"></div></div></body></html>`;
   void splash.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(splashHtml)}`);
   splash.once('ready-to-show', () => splash.show());
   const splashStarted = Date.now();
   const window = new BrowserWindow({
     width: 1480, height: 920, minWidth: 960, minHeight: 680,
-    backgroundColor: '#0c0d10', titleBarStyle: 'hidden',
+    backgroundColor: '#0c0d10', titleBarStyle: 'hidden', icon,
     titleBarOverlay: { color: '#0c0d10', symbolColor: '#92959d', height: 42 }, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
@@ -397,7 +461,11 @@ if (cliMode) {
   void app.whenReady().then(async () => {
     initializeModelDownloader();
     const helpOnly = process.argv.some(value => ['--help', '-h', '--version', '-V'].includes(value));
-    if (modelDownloader && !helpOnly) { await modelDownloader.start(); requireModelsReady(); }
+    if (modelDownloader && !helpOnly) {
+      await modelDownloader.start();
+      requireModelsReady();
+      if (process.argv.some(value => value === '--ref-audio' || value.startsWith('--ref-audio='))) await prepareOptionalModel('clone');
+    }
     process.env.VOXWEAVE_ENGINE ??= path.join(resourceRoot(), 'engine', 'qwen_tts.exe');
     process.env.VOXWEAVE_MODEL ??= path.join(modelRoot(), 'models', DEFAULT_TTS_MODEL);
     process.env.VOXWEAVE_FFMPEG ??= path.join(resourceRoot(), 'ffmpeg', 'ffmpeg.exe');
@@ -496,25 +564,28 @@ if (cliMode) {
 
   ipcMain.handle('models:status', () => modelDownloader?.status ?? bundledModelStatus);
   ipcMain.handle('models:retry', () => { if (modelDownloader) void modelDownloader.start(); });
+  ipcMain.handle('models:optional-status', () => optionalModelStatus());
+  ipcMain.handle('models:prepare-optional', (_event, value: unknown) => prepareOptionalModel(z.enum(OPTIONAL_MODELS).parse(value)));
   ipcMain.handle('models:import', async event => {
     const downloader = modelDownloader;
-    if (!downloader) return;
+    if (!downloader) return false;
     const window = BrowserWindow.fromWebContents(event.sender);
     const options = { properties: ['openDirectory' as const], title: '选择包含模型的 resources 文件夹',
       defaultPath: settings.get('modelResourcesDir') ?? resourceRoot() };
     const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
     const selected = result.filePaths[0];
-    if (result.canceled || !selected) return;
+    if (result.canceled || !selected) return false;
     const root = path.basename(selected).toLowerCase() === 'models' ? path.dirname(selected) : selected;
     const candidates = [root, path.join(root, 'resources')];
     const directories = await Promise.all(candidates.map(async candidate => {
-      const entries = await Promise.all(['models', 'semantic'].map(name => stat(path.join(candidate, name)).catch(() => undefined)));
+      const entries = await Promise.all(['models', 'semantic', 'scene-planner'].map(name => stat(path.join(candidate, name)).catch(() => undefined)));
       return entries.some(entry => entry?.isDirectory());
     }));
     const source = candidates[directories.indexOf(true)];
-    if (!source) throw new Error('请选择包含 models 或 semantic 子目录的资源文件夹。');
+    if (!source) throw new Error('请选择以前下载模型时使用的 resources 文件夹。');
     settings.set('modelResourcesDir', source);
     if (downloader.status.state !== 'ready') void downloader.restart();
+    return true;
   });
   ipcMain.handle('engine:status', () => modelDownloader && modelDownloader.status.state !== 'ready'
     ? { state: 'missing', backend: 'native', message: modelDownloader.status.message }
@@ -523,6 +594,7 @@ if (cliMode) {
   ipcMain.handle('voice:clone', async (_event, value: unknown) => {
     requireModelsReady();
     const input = z.object({ name: z.string().trim().min(1).max(60), referenceAudioPath: z.string().min(1) }).strict().parse(value);
+    if (modelDownloader && !cloneModelReady()) await prepareOptionalModel('clone');
     const id = randomUUID();
     const profile: VoiceProfile = { id, name: input.name, kind: 'clone',
       path: path.join(app.getPath('userData'), 'voices', `${id}.qvoice`), createdAt: new Date().toISOString() };
@@ -552,22 +624,23 @@ if (cliMode) {
     }
     semanticEmbedder.dispose();
     semanticReranker.clear();
-    const modelPathChanged = config.modelPath !== settings.get('semanticModelPath');
     settings.set('semanticEnginePath', config.enginePath);
     settings.set('semanticModelPath', config.modelPath);
     settings.set('semanticEnabled', Boolean(config.enginePath && config.modelPath));
-    if (config.modelPath && modelDownloader && modelDownloader.status.state !== 'ready' &&
-      (modelPathChanged || modelDownloader.status.state === 'error')) void modelDownloader.restart();
     return { ...config, configured: Boolean(config.enginePath && config.modelPath) };
   });
-  ipcMain.handle('scene-model:status', () => ({ modelPath: sceneModelPaths().modelPath ?? '', configured: Boolean(sceneModelPaths().modelPath) }));
+  ipcMain.handle('scene-model:status', () => {
+    const { modelPath, projectorPath } = sceneModelPaths();
+    return { modelPath: modelPath ?? '', configured: Boolean(modelPath), canAnalyzeSource: Boolean(projectorPath) };
+  });
   ipcMain.handle('scene-model:configure', (_event, value: unknown) => {
     if (compositionJobs.size) throw new Error('请等待当前生成完成后再更改内容模型');
     const modelPath = z.string().trim().max(1000).parse(value);
     if (modelPath && (!existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== '.gguf')) throw new Error('请选择有效的 GGUF 文本模型文件');
     if (modelPath) settings.set('sceneModelPath', modelPath); else settings.delete('sceneModelPath');
     settings.set('sceneModelEnabled', Boolean(modelPath));
-    return { modelPath, configured: Boolean(sceneModelPaths().modelPath) };
+    const paths = sceneModelPaths();
+    return { modelPath: paths.modelPath ?? '', configured: Boolean(paths.modelPath), canAnalyzeSource: Boolean(paths.projectorPath) };
   });
   ipcMain.handle('dialog:choose-file', async (_event, value: unknown) => {
     const kind = z.enum(['audio', 'video', 'engine', 'model', 'semantic-engine', 'semantic-model', 'scene-model']).parse(value);
@@ -611,7 +684,8 @@ if (cliMode) {
     const controller = new AbortController();
     const modelDir = configuredPaths().modelDir;
     const engine = configuredEngine(modelDir);
-    const scenePlanner = new LocalLlamaScenePlanner(sceneModelPaths);
+    const sceneModels = sceneModelPaths();
+    const scenePlanner = new LocalLlamaScenePlanner(() => sceneModels);
     compositionJobs.set(jobId, { controller, engine, planner: scenePlanner });
     settings.set('lastProjectId', plan.id);
     const projectDir = path.join(projectsRoot, plan.id);
@@ -630,7 +704,7 @@ if (cliMode) {
         // Missing analysis never silently falls back to a blind temporal montage.
         sourceContent = { index: { version: SOURCE_CONTENT_VERSION, candidates: [], speech: [], speechReliable: false, warnings: [] }, matches: {} };
       }
-      if (sceneModelPaths().modelPath) {
+      if (sceneModels.modelPath) {
         emit('drafting', 0.045, '正在理解文案并规划分镜画面…');
         try {
           sceneIntents = await scenePlanner.plan(plan, controller.signal);
@@ -660,11 +734,11 @@ if (cliMode) {
         if (plan.input.sourceVideoPath && sourceMetadata?.durationMs && sourceAnalysis) {
           if (sourceAnalysis.warning) plan = EditPlanSchema.parse({ ...plan, warnings: [...(plan.warnings ?? []), sourceAnalysis.warning].slice(0, 30) });
           const ffmpeg = configuredPaths().ffmpegPath;
-          if (!ffmpeg || !sceneModelPaths().modelPath) throw new Error('缺少本地内容模型或视频处理工具');
+          if (!ffmpeg || !sceneModels.modelPath) throw new Error('缺少本地内容模型或视频处理工具');
           emit('drafting', .05, '正在分析原视频内容与语句边界…');
-          const modelPaths = sceneModelPaths();
-          const manifest = await readFile(path.join(resourceRoot(), 'scene-planner', 'manifest.json'), 'utf8').catch(() => 'custom');
-          const modelStats = await Promise.all([modelPaths.modelPath, modelPaths.projectorPath].map(async file => {
+          const manifest = await readFile(path.join(resourceRoot(), 'scene-planner', 'manifest.json'), 'utf8')
+            .catch(() => readFile(path.join(modelRoot(), 'scene-planner', 'manifest.json'), 'utf8').catch(() => 'custom'));
+          const modelStats = await Promise.all([sceneModels.modelPath, sceneModels.projectorPath].map(async file => {
             const info = file ? await stat(file) : undefined; return [file, info?.size, info?.mtimeMs];
           }));
           scenePlanner.dispose(); // Release text weights before the isolated ASR worker loads its model.
@@ -894,7 +968,9 @@ if (cliMode) {
   });
   ipcMain.handle('library:open-source', (_event, value: unknown) => {
     const url = z.string().url().parse(value);
-    try { assertPexelsUrl(url, 'page'); } catch { assertMusicUrl(url, 'page'); }
+    if (url !== PIXABAY_VIDEO_PAGE) {
+      try { assertPexelsUrl(url, 'page'); } catch { assertMusicUrl(url, 'page'); }
+    }
     return shell.openExternal(url);
   });
   ipcMain.handle('composition:captions', async (_event, idValue: unknown, value: unknown) => {
@@ -942,7 +1018,7 @@ if (cliMode) {
       if (!['resolved', 'complete'].includes(plan.status)) throw new Error('请先生成可播放预览');
       const result = process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT && process.env.VOXWEAVE_EXPORT_SMOKE_OUTPUT
         ? { canceled: false, filePath: process.env.VOXWEAVE_EXPORT_SMOKE_OUTPUT }
-        : await dialog.showSaveDialog({ title: '导出 MP4', defaultPath: '声织成片.mp4', filters: [{ name: 'MP4 视频', extensions: ['mp4'] }] });
+        : await dialog.showSaveDialog({ title: '导出 MP4', defaultPath: '帧舟成片.mp4', filters: [{ name: 'MP4 视频', extensions: ['mp4'] }] });
       if (result.canceled || !result.filePath) { projectLocks.delete(id); return null; }
       const outputPath = result.filePath;
       const sourcePaths = [plan.narration.audioPath, plan.input.sourceVideoPath, ...library.list(10000).map(asset => asset.filePath)].filter(Boolean);
@@ -990,7 +1066,7 @@ if (cliMode) {
       const smokeDirectory = process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT && process.env.VOXWEAVE_ARTIFACT_SMOKE_DIR;
       if (smokeDirectory) await mkdir(smokeDirectory, { recursive: true });
       const result = smokeDirectory ? { canceled: false, filePath: path.join(smokeDirectory, `${kind}.${extension}`) }
-        : await dialog.showSaveDialog({ title: `导出${name}`, defaultPath: `声织${name}.${extension}`,
+        : await dialog.showSaveDialog({ title: `导出${name}`, defaultPath: `帧舟${name}.${extension}`,
         filters: [{ name: extension.toUpperCase(), extensions: [extension] }] });
       if (result.canceled || !result.filePath) return null;
       const outputPath = result.filePath;
@@ -1022,8 +1098,9 @@ if (cliMode) {
     const id = z.string().uuid().parse(value); const job = exportJobs.get(id);
     if (job) { job.cancelled = true; await job.renderer.cancel(id); }
   });
-  ipcMain.handle('engine:synthesize', (event, request: SynthesisRequest) => {
+  ipcMain.handle('engine:synthesize', async (event, request: SynthesisRequest) => {
     requireModelsReady();
+    if (modelDownloader && request.referenceAudio && !request.voicePath) await prepareOptionalModel('clone');
     const jobId = randomUUID(); const engine = configuredEngine(); audioJobs.set(jobId, engine);
     void engine.synthesize(request, progress => event.sender.send('engine:progress', { ...progress, jobId }))
       .catch(error => event.sender.send('engine:progress', { jobId, phase: 'error', message: error instanceof Error ? error.message : String(error) }))

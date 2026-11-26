@@ -12,6 +12,9 @@ try {
     } });
     const plan = { id: 'picker', revision: 1, input: { script: '你好。城市夜景。', visualBrief: '城市夜景' },
       narration: { voiceId: 'vivian' }, bgm: { enabled: false, volume: .15, ducking: true },
+      canvas: { width: 1080, height: 1920 }, template: { captionStyle: 'commerce-bold', captionHighlight: 'word' },
+      audio: { narrationVolume: 1, originalEnabled: false, originalVolume: .35, originalDucking: true },
+      output: { playbackRate: 1 },
       scenes: [scene('scene-001', 0, 1500, '你好。'), scene('scene-002', 1500, 4000, '城市夜景。')] };
     window.__calls = [];
     window.voxweave = {

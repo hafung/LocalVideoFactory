@@ -22,8 +22,8 @@ if (-not $versionMatch.Success) {
 $versionPrefix = "$($versionMatch.Groups[1].Value).$($versionMatch.Groups[2].Value)"
 $patchVersion = [int]$versionMatch.Groups[3].Value
 $portableVersion = $package.version
-while ((Test-Path -LiteralPath (Join-Path $releaseRoot "VoxWeave-Portable-$portableVersion-x64")) -or
-    (Test-Path -LiteralPath (Join-Path $releaseRoot "VoxWeave-Portable-$portableVersion-x64.zip"))) {
+while ((Test-Path -LiteralPath (Join-Path $releaseRoot "FrameSkiff-Portable-$portableVersion-x64")) -or
+    (Test-Path -LiteralPath (Join-Path $releaseRoot "FrameSkiff-Portable-$portableVersion-x64.zip"))) {
   $patchVersion++
   $portableVersion = "$versionPrefix.$patchVersion"
 }

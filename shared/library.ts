@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const PEXELS_API_PAGE = 'https://www.pexels.com/api/';
+export const PIXABAY_VIDEO_PAGE = 'https://pixabay.com/videos/';
+
 export const AssetTypeSchema = z.enum(['video', 'image', 'audio']);
 export const AssetLicenseSchema = z.object({
   status: z.enum(['user-owned', 'licensed', 'unknown']),

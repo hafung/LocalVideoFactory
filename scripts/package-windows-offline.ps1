@@ -25,7 +25,7 @@ $shimDir = $null
 $builderConfig = $null
 $package = Get-Content (Join-Path $projectDir 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $arch = 'x64'
-$portableName = "VoxWeave-Portable-$($package.version)-$arch"
+$portableName = "FrameSkiff-Portable-$($package.version)-$arch"
 $portableDir = Join-Path $releaseRoot $portableName
 $portableZip = "$portableDir.zip"
 if ((Test-Path $portableDir) -or (Test-Path $portableZip)) { throw "Release already exists. Bump package.json version or choose -ReleaseDir; existing packages are preserved: $portableDir" }
@@ -99,9 +99,9 @@ try {
   $packedProjector = Join-Path $unpackedDir ('resources\scene-planner\' + $sceneManifest.projectorFile)
   if (-not (Test-Path -LiteralPath $packedProjector -PathType Leaf)) { throw 'Packaged directory is missing the local vision projector.' }
   Move-Item $unpackedDir $portableDir
-  $applicationExe = Get-ChildItem -LiteralPath $portableDir -Filter "*.exe" -File | Select-Object -First 1
-  if (-not $applicationExe) { throw "Packaged application executable is missing." }
-  if ($applicationExe.Name -ne "VoxWeave.exe") { Rename-Item -LiteralPath $applicationExe.FullName -NewName "VoxWeave.exe" }
+  if (-not (Test-Path -LiteralPath (Join-Path $portableDir 'FrameSkiff.exe') -PathType Leaf)) {
+    throw "Packaged FrameSkiff executable is missing."
+  }
   Push-Location $releaseRoot
   try {
     & tar.exe -a -cf "$portableName.zip" $portableName

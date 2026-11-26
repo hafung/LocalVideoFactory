@@ -38,6 +38,17 @@ export async function createModelDownloads(root) {
   catalog.files.push({ path: 'semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf',
     url: 'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf',
     sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439' });
+  const scene = JSON.parse(await readFile(path.join(root, 'scene-planner/manifest.json'), 'utf8'));
+  const sceneSource = `${scene.quantizationSource}/resolve/${scene.revision}`;
+  for (const file of scene.files) {
+    const url = file.path === 'QWEN-LICENSE.txt' ? 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+      : `${sceneSource}/${path.posix.basename(file.path)}?download=true`;
+    catalog.files.push({ ...file, path: `scene-planner/${file.path}`, url });
+  }
+  if (![scene.modelFile, scene.projectorFile].every(file => catalog.files.some(item => item.path === `scene-planner/${file}`))) {
+    throw new Error('Missing scene model or vision projector download descriptor.');
+  }
+  catalog.manifests.push({ path: 'scene-planner/manifest.json', data: scene });
   return catalog;
 }
 

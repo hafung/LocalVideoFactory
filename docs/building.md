@@ -1,10 +1,10 @@
-# LocalVideoFactory 构建与运行指南
+# 帧舟 FrameSkiff 构建与运行指南
 
 [中文首页](../README.md) · [English overview](../README.en.md)
 
 当前源码版本见 `package.json`。Windows 安装包和对应版本说明见 [GitHub Releases](https://github.com/hafung/LocalVideoFactory/releases/latest)；希望自行构建或体验未发布改动时，请按下文准备环境与资源。
 
-应用内名称、数据目录、CLI 命令及安装包文件名仍保留 `声织 VoxWeave` / `voxweave`，以兼容已有工程和脚本。GitHub 仓库已更名为 `hafung/LocalVideoFactory`。
+帧舟的源码托管在 `hafung/LocalVideoFactory`。本地数据目录和 CLI 命令沿用 `voxweave`，已有工程、模型缓存和脚本可以继续使用。
 
 ## 环境
 
@@ -43,11 +43,11 @@ pnpm setup:scene-model
 
 还需要兼容的原生 Qwen3-TTS 引擎，见[引擎资源说明](../resources/engine/README.md)；已有构建产物可通过 `scripts/import-qwen-engine.ps1 -SourceDir <目录>` 导入。开发环境可通过设置界面或环境变量指定引擎与模型。
 
-普通安装包内置原生运行时，首次启动下载约 9 GB 的语音与检索模型，支持进度、断点续传、哈希校验和失败重试。**Qwen3.5-4B 和视觉投影不在当前安装包的首启下载清单中**，需要单独准备：运行 `pnpm setup:scene-model`，或在设置中选择已下载的语言模型，匹配的 `mmproj-F16.gguf` 放在同目录。完整离线便携包会校验并携带分镜资源。
+用当前源码打包的普通 Windows 安装包会在首次启动自动准备配音和字幕模型（约占 4.8 GB）。下载支持后台运行、断点续传、校验和重试。「创作设置」可按需下载智能分镜和原片选段（约 3.4 GB）、按意思找本地素材（约 640 MB）和音色克隆（约 3.9 GB）。完整离线便携包会校验并携带这些资源。
 
 [分镜模型说明](../resources/scene-planner/README.md) · [语义模型说明](../resources/semantic/README.md) · [FFmpeg](../resources/ffmpeg/README.md) · [渲染浏览器](../resources/browser/README.md)
 
-从 v0.2.10 起，可以在「文案成片」的首启提示中点击「导入本地模型」，选择包含 `models` 或 `semantic` 的 `resources` 文件夹。应用按清单校验并将已有文件复制到模型缓存，只下载缺失或校验失败的文件。完整模型可断网导入。缓存位于 `%APPDATA%\voxweave\model-resources`，请为需要复制的文件预留空间。
+从首启窗口或「创作设置」点击「导入已有模型」，选择之前准备模型时使用的 `resources` 文件夹。应用按清单校验并将已找到的文件复制到模型缓存。按需启用其他功能时也会先从这里查找对应模型。完整模型可断网导入。缓存位于 `%APPDATA%\voxweave\model-resources`，请为需要复制的文件预留空间。
 
 ## Windows 安装包离线部署（v0.2.9）
 
@@ -132,7 +132,7 @@ UI 开发与单元测试可在 Linux/WSL 进行；当前仓库尚未提供完整
 ## 素材和音轨
 
 - **本地素材：** 素材库支持导入视频、图片和音频，检索、预览及批量标签。导入本地素材时保留原文件路径，请保留原文件。
-- **在线画面：** 在素材库的 Pexels 页配置 API Key。自动成片和换画面可按需检索视频/图片。
+- **在线画面：** 在「创作设置 → 在线补画面」或素材库的 Pexels 页填写已有 API 密钥。自动成片和换画面可按需检索视频和图片。没有密钥时，可以用同一页的 Pixabay 链接在浏览器找素材，下载后导入。
 - **在线音乐：** “导入 BGM → 免费音乐”使用 Openverse，无需填写 Key。默认 CC0，可选包含 CC BY。作者、来源、许可及署名文本会保存在素材库。
 - **保留原声：** 添加原片并生成预览后，在“更多设置 → 音轨”勾选“保留原视频声音”。默认关闭。原声按选中的片段编排，结束后不循环。
 - **应用设置：** 选定 BGM 或调整音量后点击“生成视频”。只修改音轨时会复用旁白和分镜；再导出 MP4。
@@ -177,7 +177,7 @@ pnpm package:win:installer          # 首启下载模型的安装包
 pnpm package:win:offline-installer  # 完整离线 NSIS 安装包，受体积上限约束
 ```
 
-安装包命名保留 `VoxWeave-Setup-<version>-x64.exe`。模型下载版构建机无需语音权重，但需要原生引擎、FFmpeg、浏览器和语义运行时；`scripts/setup-semantic.ps1 -RuntimeOnly` 可跳过 embedding 权重。同版本产物已存在时，脚本会停止以保留旧文件。
+Windows 安装包名为 `FrameSkiff-Setup-<version>-x64.exe`。在线下载版的构建机需要原生引擎、FFmpeg、浏览器和语义运行时。`scripts/setup-semantic.ps1 -RuntimeOnly` 可以只准备运行时。同版本产物已存在时，脚本会停止以保留旧文件。
 
 CI 在 Linux/Windows 运行检查，交叉构建 Windows 原生引擎，并生成安装包。Actions 附件名为 `LocalVideoFactory-Windows-Setup`；与 `package.json` 匹配的 `v<version>` 标签会发布到 Releases。更新 README 或推送 main 不会自动把源码版本发布成新的 Release。
 

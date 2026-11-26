@@ -1,34 +1,32 @@
 <div align="center">
 
-<img src="build/icon.png" width="88" alt="LocalVideoFactory icon">
+<img src="build/icon.png" width="88" alt="FrameSkiff icon">
 
-# LocalVideoFactory
+# FrameSkiff · 帧舟
 
-### Your local AI short-video factory. Script in. Video out.
+### Make short videos from a script or edit a talking-head recording.
 
 **Automatic footage search · Smart source selection · Automatic editing · Voice cloning · Dynamic captions · Open music**
 
-One desktop workflow from your script to a previewable, editable MP4.
+Two local workflows in one desktop app, with a shared media library and creative settings.
 
 [简体中文](README.md) · [English](README.en.md) · [Download for Windows](https://github.com/hafung/LocalVideoFactory/releases/latest) · [Run from source](docs/building.md) · [Issues](https://github.com/hafung/LocalVideoFactory/issues)
 
 [![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
-[![Source](https://img.shields.io/badge/source-v0.2.10-d9ff69?labelColor=17181d)](package.json)
+[![Source](https://img.shields.io/badge/source-v0.2.11-d9ff69?labelColor=17181d)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
 [![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#a-local-ai-production-stack)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
 
 </div>
 
-**LocalVideoFactory** is an open-source local AI short-video factory. Enter a script to generate narration, align captions, search for footage, and automatically edit a video. Add a source video to select content-matched clips; missing footage is filled with additional media. Voice cloning, dynamic captions, free music discovery, and scene-card edits round out the workflow. Core AI runs locally on your CPU, with no dedicated GPU required.
+**FrameSkiff** is an open-source local AI video workspace. Turn a script into narrated, captioned video with footage selected automatically, or refine a talking-head recording by trimming pauses, editing captions, and adding visuals. Core AI runs locally on your CPU, with no dedicated GPU required.
 
-The desktop app is **声织 VoxWeave**. This repository was renamed from `VoxWeave` to `LocalVideoFactory`; existing project storage, voice profiles, CLI commands, and installer names retain their compatible identifiers.
+> This page describes the current source. Check [GitHub Releases](https://github.com/hafung/LocalVideoFactory/releases/latest) for the published installer and its release notes.
 
-> This page describes the v0.2.10 source. See the [latest published installer and release notes](https://github.com/hafung/LocalVideoFactory/releases/latest) or [build from source](docs/building.md). On first launch, v0.2.10 can download models or import existing local files. AI storyboarding and source-video understanding require separate scene-model setup.
+## Watch the project demo
 
-## Watch the brand film
-
-This 31-second, 16:9 brand film introduces LocalVideoFactory. Play it below with sound.
+This 31-second demo shows the script-to-video workflow under the project’s former name.
 
 https://github.com/user-attachments/assets/b75c14ea-04be-4b62-9a42-a07fc2bbd6ac
 
@@ -99,7 +97,7 @@ Screenshots were captured from the real Windows application and a generated demo
 
 ## Make your first video
 
-1. **Prepare the app and media.** [Run the current source](docs/building.md), prepare the models you need, and import local assets. Pexels requires an API key; Openverse music search works without entering one.
+1. **Prepare the app and media.** The installer built from current source prepares narration and caption models on first launch and can reuse locally downloaded models. Both workflows share the media library and settings in the top bar. [Build and run guide](docs/building.md)
 2. **Write a script and generate.** A source video is optional. The app can assemble local media, online assets, and motion typography.
 3. **Preview, refine, and export.** Replace visuals, adjust captions, select music, apply changes, and export MP4 or separate audio/subtitle files.
 

@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Download, FolderOpen, Search, Tags, WandSparkles, Trash2, ExternalLink, Check } from 'lucide-react';
 import type { MediaAsset, OnlineAsset } from '../shared/library';
+import { PEXELS_API_PAGE, PIXABAY_VIDEO_PAGE } from '../shared/library';
 import { MusicPanel } from './MusicPanel';
 
 const api = () => window.voxweave!;
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 const splitTags = (value: string) => [...new Set(value.split(/[,，\n]/u).map(tag => tag.trim()).filter(Boolean))];
 
-export function LibraryPanel({ changed, initialType, useBgm }: { changed: () => Promise<void>; initialType?: MediaAsset['type']; useBgm?: (asset: MediaAsset) => void }) {
-  const [tab, setTab] = useState<'local' | 'online' | 'music'>('local');
+export function LibraryPanel({ changed, initialType, initialTab = 'local', useBgm }: {
+  changed: () => Promise<void>; initialType?: MediaAsset['type']; initialTab?: 'local' | 'online'; useBgm?: (asset: MediaAsset) => void;
+}) {
+  const [tab, setTab] = useState<'local' | 'online' | 'music'>(initialTab);
   const [query, setQuery] = useState('');
   const [type, setType] = useState<'' | MediaAsset['type']>(initialType ?? '');
   const [assets, setAssets] = useState<MediaAsset[]>([]);
@@ -45,6 +48,17 @@ export function LibraryPanel({ changed, initialType, useBgm }: { changed: () => 
     finally { setBusy(''); }
   }
   async function refresh() { setRevision(value => value + 1); await changed(); }
+  async function importMedia(kind?: MediaAsset['type']) {
+    await run('正在导入素材…', async () => {
+      const report = await api().importAssets(kind);
+      if (report.assets.length) {
+        if (tab === 'online') { setTab('local'); setType(kind ?? ''); setQuery(''); setSelected([]); }
+        await refresh();
+        setNotice(`已导入 ${report.assets.length} 个素材${report.errors.length ? `，${report.errors.length} 个失败` : ''}`);
+      }
+      if (report.errors.length) setError(report.errors.map(item => `${item.name}：${item.message}`).join('\n'));
+    });
+  }
   async function searchOnline(nextPage = 1) {
     await run('搜索中…', async () => {
       const result = await api().searchPexels({ query, type: onlineType, page: nextPage, orientation: orientation || undefined });
@@ -69,11 +83,7 @@ export function LibraryPanel({ changed, initialType, useBgm }: { changed: () => 
       <div className="library-toolbar">
         <label className="library-search"><Search size={17} aria-hidden="true"/><input aria-label="搜索本地素材" placeholder="搜索名称、标签（支持中英文）" value={query} onChange={event => { setQuery(event.target.value); setSelected([]); }}/></label>
         <select aria-label="素材类型" value={type} onChange={event => { setType(event.target.value as typeof type); setSelected([]); }}><option value="">全部类型</option><option value="video">视频</option><option value="image">图片</option><option value="audio">音频</option></select>
-        <button disabled={!!busy} onClick={() => run('正在导入素材…', async () => {
-          const report = await api().importAssets(type || undefined); await refresh();
-          setNotice(`已导入 ${report.assets.length} 个素材${report.errors.length ? `，${report.errors.length} 个失败` : ''}`);
-          if (report.errors.length) setError(report.errors.map(item => `${item.name}：${item.message}`).join('\n'));
-        })}><FolderOpen size={16} aria-hidden="true"/> 批量导入</button>
+        <button disabled={!!busy} onClick={() => void importMedia(type || undefined)}><FolderOpen size={16} aria-hidden="true"/> 批量导入</button>
       </div>
       <p className="library-hint">自动标签来自文件名、目录、媒体属性与中英文词库；不会将本地媒体上传。原文件请保留在原位置。</p>
       <div className="library-selection"><label><input type="checkbox" checked={assets.length > 0 && assets.every(asset => selected.includes(asset.id))} onChange={event => setSelected(event.target.checked ? assets.map(asset => asset.id) : [])}/> 选择当前结果</label><span>已选 {selected.length} · 显示 {assets.length}{assets.length === 100 ? '（请用关键词缩小范围）' : ''}</span></div>
@@ -110,20 +120,32 @@ export function LibraryPanel({ changed, initialType, useBgm }: { changed: () => 
       </article>)}</div>
       {!assets.length && <p className="library-empty">{type === 'audio' ? <>还没有匹配的音频。点击「批量导入」添加本地 BGM，或<button onClick={() => setTab('music')}>搜索免费音乐</button>。</> : '还没有匹配的素材。导入本地视频、图片或 BGM，或者切换到 Pexels 搜索。'}</p>}
     </> : tab === 'online' ? <>
-      <p className="library-hint">按需搜索和下载图片、视频，授权遵循 Pexels License。<button onClick={() => run('打开 Pexels…', () => api().openSource('https://www.pexels.com/'))}>素材由 Pexels 提供 <ExternalLink size={14} aria-hidden="true"/></button></p>
-      <details className="pexels-config"><summary>{configured ? 'Pexels API Key 已配置（点击修改）' : '配置 Pexels API Key'}</summary>
-        <div className="pexels-key-row"><label className="key-field"><span>API Key</span><input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} placeholder="输入 API Key，保存在本机系统加密存储"/></label>
-          <button disabled={!!busy || !key.trim()} onClick={() => run('保存设置…', async () => { await api().configurePexels(key); setKey(''); setConfigured(true); setNotice('API Key 已保存'); })}>保存</button>
-          <button onClick={() => run('打开申请页面…', () => api().openSource('https://www.pexels.com/api/'))}>申请 Key</button>
-          {configured && <button disabled={!!busy} onClick={() => run('清除设置…', async () => { await api().configurePexels(''); setConfigured(false); })}>清除</button>}
+      <p className="library-hint">本地素材不够时，帧舟可以从 Pexels 搜视频和图片来补画面。</p>
+      <details className="pexels-config"><summary>{configured ? '管理 Pexels 密钥' : '填写已有 Pexels 密钥'}</summary>
+        <div className="pexels-key-row"><label className="key-field"><span>Pexels API 密钥</span><input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} placeholder="粘贴你已有的密钥"/></label>
+          <button disabled={!!busy || !key.trim()} onClick={() => run('保存设置…', async () => { await api().configurePexels(key); setKey(''); setConfigured(true); setNotice('密钥已保存，可以搜索在线素材。'); })}>保存密钥</button>
+          {configured && <button disabled={!!busy} onClick={() => run('清除设置…', async () => {
+            await api().configurePexels(''); setConfigured((await api().pexelsStatus()).configured);
+            setOnline([]); setTranslated(''); setPage(1);
+          })}>清除本机密钥</button>}
         </div>
       </details>
-      <form className="library-toolbar" onSubmit={event => { event.preventDefault(); void searchOnline(); }}>
+      {configured && <form className="library-toolbar" onSubmit={event => { event.preventDefault(); void searchOnline(); }}>
         <label className="library-search"><Search size={17} aria-hidden="true"/><input aria-label="搜索 Pexels 素材" placeholder="如：城市、办公室、海边，或输入英文" value={query} onChange={event => { setQuery(event.target.value); setPage(1); setOnline([]); }}/></label>
         <select aria-label="联网素材类型" value={onlineType} onChange={event => { setOnlineType(event.target.value as typeof onlineType); setPage(1); setOnline([]); }}><option value="video">视频</option><option value="image">图片</option></select>
         <select aria-label="联网素材画幅" value={orientation} onChange={event => { setOrientation(event.target.value as typeof orientation); setPage(1); setOnline([]); }}><option value="">全部画幅</option><option value="portrait">竖屏</option><option value="landscape">横屏</option><option value="square">方形</option></select>
-        <button type="submit" disabled={!!busy || !query.trim() || !configured}>搜索</button>
-      </form>
+        <button type="submit" disabled={!!busy || !query.trim()}>搜索</button>
+        <button type="button" onClick={() => run('打开 Pexels…', () => api().openSource('https://www.pexels.com/'))}>素材由 Pexels 提供 <ExternalLink size={14} aria-hidden="true"/></button>
+      </form>}
+      <details className="online-alternatives" open={!configured}>
+        <summary>{configured ? '其他找素材的方法' : '没有 Pexels 密钥？'}</summary>
+        <p>可以到 Pixabay 网页找素材，下载后导入，无需 API 密钥。</p>
+        <div className="library-toolbar">
+          <button disabled={!!busy} onClick={() => run('打开 Pexels…', () => api().openSource(PEXELS_API_PAGE))}>查看 Pexels 密钥状态 <ExternalLink size={14} aria-hidden="true"/></button>
+          <button disabled={!!busy} onClick={() => run('打开 Pixabay…', () => api().openSource(PIXABAY_VIDEO_PAGE))}>去 Pixabay 找素材 <ExternalLink size={14} aria-hidden="true"/></button>
+          <button disabled={!!busy} onClick={() => void importMedia()}><FolderOpen size={16} aria-hidden="true"/> 导入已下载的素材</button>
+        </div>
+      </details>
       {translated && <p className="library-hint">实际搜索词：{translated} · 可直接输入英文调整结果</p>}
       <div className="asset-grid">{online.map(item => <article className="asset-card" key={item.id}>
         <img className="online-thumbnail" loading="lazy" src={item.thumbnailUrl} alt={item.name}/>

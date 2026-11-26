@@ -13,4 +13,4 @@
 
 音乐搜索通过 Openverse 进行，音乐以结果中的作者、来源和许可为准；截图中的来源链接可在应用内查看。示例使用 CC0 音乐，应用会将曲目作者、来源 URL、许可 URL 和署名文本写入本地素材记录。
 
-界面中的“声织 / VoxWeave”是保留兼容的桌面应用名称；GitHub 项目名为 LocalVideoFactory。
+截图来自更名前的 Windows 版本，当前应用名称为帧舟 FrameSkiff。
