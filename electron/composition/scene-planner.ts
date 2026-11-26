@@ -128,7 +128,7 @@ export class LocalLlamaScenePlanner implements ScenePlanner {
           chat_template_kwargs: { enable_thinking: false },
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: '你是短视频分镜策划。根据旁白原文，为每个分镜提出可搜索到的真实素材画面。只理解文字，不要假装看过任何素材。严禁改写旁白或添加原文没有的事实。每个分镜输出3到6个简洁中文检索词，以及一个适合 Pexels 的英文搜索短语。画面应具体、可拍摄、适合作为 B-roll，优先场景、动作、物体，不要抽象概念。严格只返回 JSON：{"scenes":[{"id":"原分镜ID","keywords":["中文词"],"pexelsQuery":"English search phrase"}]}。' },
+            { role: 'system', content: '你是短视频分镜策划。根据旁白原文，为每个分镜提出可搜索到的真实素材画面。只理解文字，不要假装看过任何素材。严禁改写旁白或添加原文没有的事实。每个分镜输出3到6个简洁中文检索词，以及一个适合素材网站的英文搜索短语。画面应具体、可拍摄、适合作为 B-roll，优先场景、动作、物体，不要抽象概念。严格只返回 JSON：{"scenes":[{"id":"原分镜ID","keywords":["中文词"],"pexelsQuery":"English search phrase"}]}。' },
             { role: 'user', content: JSON.stringify({ storyContext: plan.input.script.slice(0, 1000), scenes: sceneData }) }
           ]
         }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000)

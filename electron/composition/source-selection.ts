@@ -76,7 +76,7 @@ export function arrangeContentScenes(slots: Scene[], content: SourceContentPlan,
           intent: { ...slot.visual.intent, minDurationMs: length } } });
       cursor += length; used.push(range); lastSourceEnd = range.endMs; uses.set(candidate.id, (uses.get(candidate.id) ?? 0) + 1);
     }
-    // Unmatched time goes through the existing local/Pexels video-first pipeline.
+    // Unmatched time goes through the existing local and online video-first pipeline.
     while (cursor < endMs) {
       const length = Math.min(5000, endMs - cursor);
       scenes.push({ ...slot, id: `${origin}-supplement-${++piece}`, originSceneId: origin, startMs: cursor, endMs: cursor + length,

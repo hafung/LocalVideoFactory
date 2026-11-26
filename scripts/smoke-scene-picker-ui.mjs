@@ -91,14 +91,21 @@ try {
           }))
         };
       },
-      pexelsStatus: async () => ({ configured: true }),
-      searchPexels: async request => { window.__calls.push({ search: request });
-        const item = (id, type, durationMs) => ({ id, type, durationMs, name: id,
-          thumbnailUrl: thumbnails[type === 'video' ? 0 : 1], sourceUrl: 'https://www.pexels.com/video/1/', author: 'Creator', width: 1920, height: 1080 });
-        return { query: 'city night', items: request.type === 'video'
-          ? [item('short', 'video', 2000), item('long', 'video', 6000)]
-          : Array.from({ length: 18 }, (_, index) => item(`photo-${index}`, 'image')) }; },
-      downloadPexels: async id => { window.__calls.push({ download: id }); return { id: 'downloaded', type: 'video' }; },
+      onlineSourceStatus: async () => [{ source: 'wikimedia', types: ['video', 'image'], state: 'ready', automatic: true }],
+      searchOnlineMedia: async (_id, request) => {
+        window.__calls.push({ search: request });
+        const item = (id, type, durationMs) => ({ id, type, durationMs, name: id, source: 'wikimedia',
+          thumbnailUrl: thumbnails[type === 'video' ? 0 : 1], previewUrl: thumbnails[type === 'video' ? 0 : 1],
+          license: { status: 'licensed', source: 'wikimedia', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Video.webm',
+            author: 'Creator', licenseName: 'CC0 1.0' }, width: 1920, height: 1080 });
+        return { source: 'wikimedia', query: 'city night', hasMore: false, page: 1, items: request.types.includes('video')
+          ? [...Array.from({ length: 17 }, (_, index) => item(`clip-${index}`, 'video', 6000)), item('short', 'video', 2000)]
+          : Array.from({ length: 18 }, (_, index) => item(`photo-${index}`, 'image')) };
+      },
+      downloadOnlineMedia: async (_id, itemId) => {
+        window.__calls.push({ download: itemId }); return { asset: { id: 'downloaded', type: 'video' } };
+      },
+      cancelOnlineMedia: async () => {},
       replaceScene: async (...args) => { window.__calls.push({ replace: args }); return { status: 'replaced', plan, preview }; },
       exportVideo: async () => ({ jobId: 'export' }),
       cancelExport: async jobId => {
@@ -144,6 +151,11 @@ try {
   await page.waitForSelector('.scene-picker-online-card');
   await checkThumbnailGrid(3);
   assert.equal(await page.$eval('[data-source="online"]', tab => tab.getAttribute('aria-selected')), 'true');
+  assert.ok(await page.$eval('.online-source-banner', banner => banner.textContent.includes('当前使用 Wikimedia Commons')));
+  await page.select('.scene-picker-online-type select', 'image');
+  await page.waitForFunction(() => document.querySelector('.scene-picker-online .scene-picker-card b')?.textContent === 'photo-0');
+  await page.select('.scene-picker-online-type select', '');
+  await page.waitForFunction(() => document.querySelector('.scene-picker-online .scene-picker-card b')?.textContent === 'clip-0');
   const list = '.scene-picker-online';
   const short = `${list} .scene-picker-online-card:last-child .scene-picker-card`;
   assert.equal(await page.$eval(short, button => button.disabled), true);
@@ -183,8 +195,8 @@ try {
   const calls = await page.evaluate(() => window.__calls);
   assert.deepEqual(calls.find(call => call.replace).replace[2],
     { type: 'asset', assetId: 'downloaded', sourceInMs: 0, throughSceneId: 'scene-002' });
-  assert.ok(calls.some(call => call.search?.type === 'video'));
-  assert.ok(calls.some(call => call.search?.type === 'image'));
+  assert.ok(calls.some(call => call.search?.types.includes('video') && call.search?.minDurationMs === 4000));
+  assert.ok(calls.some(call => call.search?.types.join(',') === 'image'));
   await page.waitForSelector('.scene-picker', { hidden: true });
   await page.setViewport({ width: 960, height: 680 });
   await checkExportRow();
@@ -198,5 +210,5 @@ try {
   await page.waitForSelector('.export-progress-header button');
   await checkExportRow();
   assert.deepEqual(errors, []);
-  console.log('UI smoke passed: scene picker, Pexels download and apply, and a single export-format row while exporting and after completion.');
+  console.log('UI smoke passed: scene picker, Commons download and apply, and a single export-format row while exporting and after completion.');
 } finally { await browser.close(); }

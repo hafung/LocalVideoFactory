@@ -271,7 +271,6 @@
   background: #101113;
   object-fit: contain;
 }
-.scene-picker-attribution { display: flex; justify-content: end; margin: -5px 0 7px; }
 .scene-picker-online-card { min-width: 0; }
 .scene-picker-online-card .scene-picker-card:disabled { opacity: .68; }
 .scene-picker-link {
@@ -287,8 +286,6 @@
   cursor: pointer;
 }
 .scene-picker-link:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
-.scene-picker button.scene-picker-author { max-width: 100%; padding-inline: 4px; color: var(--picker-text-secondary); font-size: 11px; text-align: left; overflow-wrap: anywhere; }
-.scene-picker-author svg { flex: none; }
 .scene-picker-undo { min-height: 36px; }
 
 .scene-picker-footer {

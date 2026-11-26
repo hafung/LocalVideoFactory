@@ -1,6 +1,7 @@
 import '@hyperframes/player';
 import './library.css';
 import { LibraryPanel } from './LibraryPanel';
+import { OnlineSourceSettings } from './OnlineMedia';
 import { ModelProgress } from './ModelProgress';
 import { Modal } from './Modal';
 import { ScenePicker } from './ScenePicker';
@@ -94,7 +95,6 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   const [optionalModels, setOptionalModels] = useState<OptionalModelStatus>();
   const [optionalRequests, setOptionalRequests] = useState<Partial<Record<OptionalModel, boolean>>>({});
   const [optionalErrors, setOptionalErrors] = useState<Partial<Record<OptionalModel, string>>>({});
-  const [pexelsConfigured, setPexelsConfigured] = useState<boolean>();
   const [modelImportPending, setModelImportPending] = useState(false);
   const [modelImportError, setModelImportError] = useState('');
   const [modelImportNotice, setModelImportNotice] = useState('');
@@ -206,9 +206,6 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
       }
     });
   }, []);
-  useEffect(() => {
-    if (settingsOpen) void api()?.pexelsStatus?.().then(result => setPexelsConfigured(result.configured)).catch(() => undefined);
-  }, [settingsOpen]);
 
   useEffect(() => {
     const player = playerRef.current;
@@ -569,7 +566,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     {candidateSceneId && plan && projectId && candidateStartIndex >= 0 && <ScenePicker key={`${projectId}-${candidateSceneId}`}
       projectId={projectId} scenes={plan.scenes.slice(candidateStartIndex, candidateStartIndex + 10)}
       playbackRate={compositionRate} onClose={() => setCandidateSceneId(undefined)}
-      onOpenOnlineLibrary={openOnlineLibrary} onAssetsChanged={refreshAssets}
+      onOpenOnlineSettings={() => { setCandidateSceneId(undefined); openDialog('settings'); }} onAssetsChanged={refreshAssets}
       onApply={choice => replaceScene(candidateSceneId, choice)}/>}
 
     {cloneOpen && <Modal title="克隆音色" subtitle="用一段参考录音制作自己的旁白音色。" close={() => !cloneBusy && setCloneOpen(false)}>
@@ -585,7 +582,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     </Modal>}
 
     {libraryView && <Modal title="素材库" subtitle={libraryView === 'audio' ? '导入音频后，回到背景音乐下拉框选择配乐' : '整理画面、图片与声音，两种创作模式都可以使用。'} close={() => openDialog()} wide workspace>
-      <LibraryPanel initialTab={libraryView === 'online' ? 'online' : undefined} initialType={libraryView === 'audio' ? 'audio' : undefined} changed={refreshAssets}
+      <LibraryPanel initialTab={libraryView === 'online' ? 'online' : undefined} initialType={libraryView === 'audio' ? 'audio' : undefined} changed={refreshAssets} onOnlineSettings={() => openDialog('settings')}
         useBgm={active && plan && preview && !working ? asset => { setBgmAsset(asset.id); openDialog(); } : undefined}/>
     </Modal>}
 
@@ -622,9 +619,9 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
           status={optionalModels?.clone.installed ? '已就绪' : '可选'} ready={optionalModels?.clone.installed}>
           {optionalModelAction('clone', Boolean(optionalModels?.clone.installed))}
         </Feature>
-        <Feature title="在线补画面" description="本地素材不够时，从 Pexels 找视频和图片补上。"
-          status={pexelsConfigured ? '已填写密钥' : '可选'} ready={pexelsConfigured}>
-          <div className="model-actions"><button className="secondary-button" onClick={openOnlineLibrary}>查看在线素材选项</button></div>
+        <Feature title="在线补画面" description="本地素材不足时，按下方顺序搜索符合条件的在线来源。"
+          status="支持无 Key 搜索" ready>
+          <OnlineSourceSettings/>
         </Feature>
         {modelSetup && modelSetup.state !== 'bundled' && <div>
           <button className="text-action" disabled={modelImportPending} onClick={() => void importLocalModels()}>导入已有模型</button>

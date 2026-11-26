@@ -105,10 +105,11 @@ export interface VoxWeaveApi {
   updateAssetTags(ids: string[], tags: string[], mode: 'replace' | 'append'): Promise<void>;
   autoTagAssets(ids: string[]): Promise<void>;
   removeAssets(ids: string[]): Promise<void>;
-  pexelsStatus(): Promise<{ configured: boolean }>;
-  configurePexels(key: string): Promise<void>;
-  searchPexels(request: { query: string; type: 'video' | 'image'; page: number; orientation?: 'portrait' | 'landscape' | 'square' }): Promise<{ items: OnlineAsset[]; query: string }>;
-  downloadPexels(id: string): Promise<MediaAsset>;
+  onlineSourceStatus(): Promise<OnlineSourceStatus[]>;
+  configureOnlineSource(value: ConfigureOnlineSource): Promise<OnlineSourceStatus[]>;
+  searchOnlineMedia(id: string, request: OnlineSearchRequest): Promise<OnlineSearchResult>;
+  downloadOnlineMedia(id: string, itemId: string): Promise<OnlineDownloadResult>;
+  cancelOnlineMedia(id: string): Promise<void>;
   searchMusic(request: import('./library.js').MusicSearchRequest): Promise<import('./library.js').MusicSearchResult>;
   downloadMusic(id: string): Promise<MediaAsset>;
   openSource(url: string): Promise<void>;
@@ -126,7 +127,7 @@ export interface VoxWeaveApi {
   onCompositionProgress(listener: (event: CompositionProgressEvent) => void): () => void;
 }
 import type { DraftPlanRequest, EditPlan } from './edit-plan.js';
-import type { MediaAsset, ImportReport, OnlineAsset } from './library.js';
+import type { MediaAsset, ImportReport, ConfigureOnlineSource, OnlineSourceStatus, OnlineSearchRequest, OnlineSearchResult, OnlineDownloadResult } from './library.js';
 import type { SceneCandidateResult, SceneChoice } from './scene-candidates.js';
 export interface ExportProgress {
   jobId: string; progress: number; phase: 'preparing' | 'capturing' | 'encoding' | 'complete' | 'error' | 'cancelled';

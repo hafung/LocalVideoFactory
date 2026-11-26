@@ -1,14 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Check, ExternalLink, Film, Globe, Image, Plus, Search, Type, Undo2 } from 'lucide-react';
+import { Check, Film, Globe, Image, Plus, Search, Type, Undo2 } from 'lucide-react';
 import type { Scene } from '../shared/edit-plan';
-import type { OnlineAsset } from '../shared/library';
+import type { OnlineAsset, OnlineSearchResult, OnlineType } from '../shared/library';
+import { OnlineCredits, OnlineSourceBanner, onlineOperation, useOnlineSources } from './OnlineMedia';
 import type { SceneCandidate, SceneCandidateResult, SceneChoice } from '../shared/scene-candidates';
 import { Modal } from './Modal';
 import './scene-picker.css';
 
 const sources = [
   { id: 'local', label: '本地素材', icon: Image },
-  { id: 'online', label: 'Pexels 在线素材', icon: Globe }
+  { id: 'online', label: '在线素材', icon: Globe }
 ] as const;
 
 type Source = typeof sources[number]['id'];
@@ -21,19 +22,19 @@ function candidateKey(candidate: SceneCandidate) {
 
 function onlinePriority(item: OnlineAsset, durationMs: number) {
   if (item.type === 'image') return 1;
-  return (item.durationMs ?? 0) >= durationMs ? 0 : 2;
+  return item.durationMs === undefined || item.durationMs >= durationMs ? 0 : 2;
 }
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOnlineLibrary, onAssetsChanged, onApply }: {
+export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOnlineSettings, onAssetsChanged, onApply }: {
   projectId: string;
   scenes: Scene[];
   playbackRate: number;
   onClose: () => void;
-  onOpenOnlineLibrary: () => void;
+  onOpenOnlineSettings: () => void;
   onAssetsChanged: () => Promise<void>;
   onApply: (choice: SceneChoice) => Promise<void>;
 }) {
@@ -41,7 +42,12 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
   const [query, setQuery] = useState('');
   const [request, setRequest] = useState<SearchRequest>({ query: '', endIndex: 0, revision: 0 });
   const [localResult, setLocalResult] = useState<{ request: SearchRequest; result?: SceneCandidateResult; error?: string }>();
-  const [onlineResult, setOnlineResult] = useState<{ keyword: string; revision: number; items?: OnlineAsset[]; error?: string; needsKey?: boolean }>();
+  const [onlineResult, setOnlineResult] = useState<{ keyword: string; revision: number; durationMs: number; type: OnlineType | '';
+    result?: OnlineSearchResult; error?: string; cancelled?: boolean }>();
+  const [onlineType, setOnlineType] = useState<OnlineType | ''>('');
+  const { sources: onlineSources } = useOnlineSources(source === 'online');
+  const onlineSearch = useRef<AbortController>(undefined);
+  const onlineDownload = useRef<AbortController>(undefined);
   const [localSelection, setLocalSelection] = useState<string>();
   const [onlineSelection, setOnlineSelection] = useState<string>();
   const [pending, setPending] = useState<'apply' | 'download'>();
@@ -64,10 +70,11 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
   const selectedLocal = localItems.find(candidate => candidateKey(candidate) === localSelection) ?? localItems[0];
   const automaticSearch = localResult?.request.query === request.query ? localResult.result : undefined;
   const keyword = request.query || automaticSearch?.onlineQuery || automaticSearch?.query.split(/\s+/u).slice(0, 4).join(' ') || '';
-  const onlineCurrent = onlineResult?.keyword === keyword && onlineResult.revision === onlineRevision;
+  const onlineCurrent = onlineResult?.keyword === keyword && onlineResult.revision === onlineRevision &&
+    onlineResult.durationMs === durationMs && onlineResult.type === onlineType;
   const onlineLoading = (localLoading && !request.query) || Boolean(keyword && !onlineCurrent);
   const onlineItems = onlineLoading || !onlineCurrent ? [] :
-    [...(onlineResult.items ?? [])].sort((left, right) => onlinePriority(left, durationMs) - onlinePriority(right, durationMs));
+    [...(onlineResult.result?.items ?? [])].sort((left, right) => onlinePriority(left, durationMs) - onlinePriority(right, durationMs));
   const selectedOnline = onlineItems.find(item => item.id === onlineSelection && onlinePriority(item, durationMs) < 2);
   const selectedName = source === 'local' ? selectedLocal?.asset.name : selectedOnline?.name;
 
@@ -82,31 +89,26 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
   }, [desktop, projectId, scene.id, request, throughSceneId]);
 
   useEffect(() => {
-    if (!keyword) return;
-    let active = true;
-    async function searchOnline() {
-      try {
-        const status = await desktop.pexelsStatus();
-        if (!active) return;
-        if (!status.configured) {
-          setOnlineResult({ keyword, revision: onlineRevision, needsKey: true });
-          return;
-        }
-        const types = ['video', 'image'] as const;
-        const results = await Promise.allSettled(types.map(type => desktop.searchPexels({
-          query: keyword, type, page: 1, orientation
-        })));
-        if (!active) return;
-        const items = results.flatMap(result => result.status === 'fulfilled' ? result.value.items : []);
-        const error = !items.length ? results.find(result => result.status === 'rejected') : undefined;
-        setOnlineResult({ keyword, revision: onlineRevision, items, error: error && errorMessage(error.reason) });
-      } catch (error) {
-        if (active) setOnlineResult({ keyword, revision: onlineRevision, error: errorMessage(error) });
-      }
-    }
-    void searchOnline();
-    return () => { active = false; };
-  }, [desktop, keyword, onlineRevision, orientation]);
+    if (source !== 'online' || !keyword || onlineCurrent) return;
+    const controller = new AbortController();
+    onlineSearch.current = controller;
+    const search = { keyword, revision: onlineRevision, durationMs, type: onlineType };
+    void onlineOperation(controller.signal, id => desktop.searchOnlineMedia(id, {
+      query: keyword, types: onlineType ? [onlineType] : ['video', 'image'], orientation, minDurationMs: durationMs
+    })).then(result => {
+      if (!controller.signal.aborted) setOnlineResult({ ...search, result });
+    }).catch(error => {
+      if (!controller.signal.aborted) setOnlineResult({ ...search, error: errorMessage(error) });
+    });
+    return () => { controller.abort(); onlineSearch.current = undefined; };
+  }, [desktop, source, keyword, onlineRevision, orientation, durationMs, onlineType, onlineCurrent]);
+
+  useEffect(() => () => onlineDownload.current?.abort(), []);
+
+  function cancelSearch() {
+    onlineSearch.current?.abort();
+    setOnlineResult({ keyword, revision: onlineRevision, durationMs, type: onlineType, cancelled: true });
+  }
 
   function changeEnd(index: number) {
     if (pending) return;
@@ -136,15 +138,32 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
     setApplyError('');
     try {
       if (online) {
-        const asset = await desktop.downloadPexels(choice.id);
+        const controller = new AbortController();
+        onlineDownload.current = controller;
+        const result = await onlineOperation(controller.signal, id => desktop.downloadOnlineMedia(id, choice.id));
+        controller.signal.throwIfAborted();
+        if ('alternatives' in result) {
+          setOnlineSelection(undefined);
+          if (result.alternatives.items.length) {
+            setOnlineResult({ keyword, revision: onlineRevision, durationMs, type: onlineType, result: result.alternatives });
+          } else {
+            setApplyError(result.alternatives.notice ?? '下载失败，请选择其他素材');
+          }
+          return;
+        }
+        const { asset } = result;
         await onAssetsChanged();
+        controller.signal.throwIfAborted();
+        onlineDownload.current = undefined;
+        setPending('apply');
         await onApply({ type: 'asset', assetId: asset.id, sourceInMs: asset.type === 'video' ? 0 : undefined, throughSceneId });
       } else {
         await onApply({ ...choice, throughSceneId });
       }
     } catch (error) {
-      setApplyError(errorMessage(error));
+      if (!onlineDownload.current?.signal.aborted) setApplyError(errorMessage(error));
     } finally {
+      onlineDownload.current = undefined;
       setPending(undefined);
     }
   }
@@ -234,25 +253,27 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
               </div>
             </div> : <div className="scene-picker-empty">
               <p>本地素材库里没有适合这段台词的画面。</p>
-              <button type="button" className="scene-picker-link" onClick={() => switchSource('online')}>去 Pexels 找素材</button>
+              <button type="button" className="scene-picker-link" onClick={() => switchSource('online')}>搜索在线素材</button>
             </div>)}
         </section>
 
         <section role="tabpanel" id={`${id}-online-panel`} aria-labelledby={`${id}-online-tab`} hidden={source !== 'online'}>
           {source === 'online' && <>
-            {onlineLoading ? <p className="scene-picker-empty" role="status">正在搜索在线素材…</p>
-              : !keyword ? <p className="scene-picker-empty">输入关键词，在 Pexels 搜索视频和图片。</p>
-              : onlineResult?.needsKey ? <div className="scene-picker-empty">
-                <p>连接 Pexels 后即可搜索在线素材。</p>
-                <button type="button" className="scene-picker-link" disabled={!!pending} onClick={onOpenOnlineLibrary}>设置 Pexels 密钥</button>
-              </div>
-              : onlineResult?.error ? <p className="scene-picker-empty" role="alert">{onlineResult.error}</p>
+            <OnlineSourceBanner source={onlineCurrent ? onlineResult.result?.source : undefined} sources={onlineSources}
+              types={onlineType ? [onlineType] : ['video', 'image']} onSettings={onOpenOnlineSettings}/>
+            <label className="scene-picker-online-type">素材类型 <select value={onlineType} disabled={!!pending}
+              onChange={event => { setOnlineType(event.target.value as OnlineType | ''); setOnlineSelection(undefined); }}>
+              <option value="">视频优先</option><option value="video">仅视频</option><option value="image">仅图片</option>
+            </select></label>
+            {onlineCurrent && onlineResult.result?.notice && <p className="scene-picker-empty" role="status">
+              {onlineResult.result.notice}{onlineItems.length ? '。请选择其他素材。' : '。'}
+            </p>}
+            {onlineLoading ? <p className="scene-picker-empty" role="status">正在搜索在线素材… {keyword &&
+                <button type="button" className="scene-picker-link" onClick={cancelSearch}>取消</button>}</p>
+              : !keyword ? <p className="scene-picker-empty">输入关键词搜索视频或图片。</p>
+              : onlineCurrent && onlineResult.cancelled ? <p className="scene-picker-empty">搜索已取消。</p>
+              : onlineCurrent && onlineResult.error ? <p className="scene-picker-empty" role="alert">{onlineResult.error}</p>
               : onlineItems.length ? <>
-                <div className="scene-picker-attribution">
-                  <button type="button" className="scene-picker-link" onClick={() => void desktop.openSource('https://www.pexels.com/')}>
-                    素材由 Pexels 提供 <ExternalLink size={12} aria-hidden="true"/>
-                  </button>
-                </div>
                 <div className="scene-picker-grid scene-picker-online">{onlineItems.map(item => {
                   const tooShort = onlinePriority(item, durationMs) === 2;
                   return <article className="scene-picker-online-card" key={item.id}>
@@ -260,17 +281,21 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
                       disabled={tooShort || !!pending} onClick={() => { setOnlineSelection(item.id); setApplyError(''); }}>
                       <div className="scene-picker-thumb">
                         <img src={item.thumbnailUrl} alt="" loading="lazy"/>
-                        <span>{item.type === 'video' ? `视频 · ${((item.durationMs ?? 0) / 1000).toFixed(1)} 秒` : '图片'}</span>
+                        <span>{item.type === 'video' ? item.durationMs ? `视频 · ${(item.durationMs / 1000).toFixed(1)} 秒` : '视频' : '图片'}</span>
                         {selectedOnline === item && <Check className="scene-picker-check" size={20} aria-hidden="true"/>}
                       </div>
                       <b title={item.name}>{item.name}</b>
                       {tooShort && <small>视频太短，无法播完所选台词</small>}
                     </button>
-                    <button type="button" className="scene-picker-link scene-picker-author" title={item.author}
-                      onClick={() => void desktop.openSource(item.sourceUrl)}>{item.author}<ExternalLink size={12} aria-hidden="true"/></button>
+                    <OnlineCredits license={item.license}/>
                   </article>;
                 })}</div>
-              </> : <p className="scene-picker-empty">没有找到素材，试试其他关键词。</p>}
+                {selectedOnline && <div className="scene-picker-preview">
+                  <h3>画面预览</h3>
+                  {selectedOnline.type === 'video' ? <video key={selectedOnline.id} src={selectedOnline.previewUrl} controls preload="metadata"
+                    aria-label={selectedOnline.name}/> : <img src={selectedOnline.previewUrl} alt={selectedOnline.name}/>}
+                </div>}
+              </> : <p className="scene-picker-empty">没有找到素材，试试其他关键词或素材类型。</p>}
           </>}
         </section>
       </div>
@@ -284,6 +309,7 @@ export function ScenePicker({ projectId, scenes, playbackRate, onClose, onOpenOn
           <span aria-live="polite">{endIndex ? `${endIndex + 1} 句共用一个画面` : '仅用于当前台词'} · {duration} 秒</span>
         </div>
         <div className="scene-picker-actions">
+          {pending === 'download' && <button type="button" className="scene-picker-secondary" onClick={() => onlineDownload.current?.abort()}>取消下载</button>}
           <button type="button" className="scene-picker-secondary" disabled={!!pending || (scene.visual.type === 'kinetic-text' && endIndex === 0)}
             onClick={() => void apply({ type: 'kinetic-text' })}><Type size={15} aria-hidden="true"/> 仅用文字做画面</button>
           <button type="button" className="modal-primary" disabled={!!pending || !selectedName} onClick={() => {

@@ -25,7 +25,7 @@ import { NoReplacementAssetError, applySceneChoice, replaceSceneAsset } from './
 import { listSceneCandidates } from './library/scene-candidates.js';
 import { LocalLlamaEmbedder, SemanticReranker } from './library/semantic.js';
 import { selectBroll, splitUnfilledScenes, fillShortLocalVideos } from './library/selector.js';
-import { fillOnlineMedia, type AutomaticMediaProvider } from './library/automatic-media.js';
+import { fillOnlineMedia } from './library/automatic-media.js';
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
 import { ModelDownloader, type LocalModelSources } from './model-downloads.js';
@@ -34,10 +34,13 @@ import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared
 import { CaptionHighlightSchema } from '../shared/edit-plan.js';
 import { updateCaptionHighlight } from './composition/caption-editing.js';
 import { AssetTypeSchema, ImportAssetRequestSchema, UpdateTagsSchema, SearchAssetsRequestSchema, type ImportReport } from '../shared/library.js';
-import { PIXABAY_VIDEO_PAGE } from '../shared/library.js';
+import { isOnlineSource, type CoverrTier } from '../shared/library.js';
 import { searchAssets } from './library/search.js';
 import { refreshedAutomaticTags } from './library/tags.js';
-import { PexelsClient, assertPexelsUrl } from './library/pexels.js';
+import { OnlineMediaService } from './library/online/service.js';
+import { OnlineMediaCache } from './library/online/cache.js';
+import { registerOnlineMedia } from './library/online/ipc.js';
+import { httpsUrl } from './library/online/adapter.js';
 import { OpenverseClient, assertMusicUrl, musicLicense } from './library/openverse.js';
 import { analyzeSource } from './composition/source-edits.js';
 import { resolveSceneModelPaths } from './composition/scene-model.js';
@@ -57,7 +60,8 @@ if ((process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT || process.env.VOXWEAVE_SMOKE
 }
 
 interface Settings extends EngineConfig {
-  lastProjectId?: string; pexelsKeyEncrypted?: string; voiceProfiles?: VoiceProfile[];
+  lastProjectId?: string; voiceProfiles?: VoiceProfile[];
+  pexelsKeyEncrypted?: string; pixabayKeyEncrypted?: string; coverrKeyEncrypted?: string; coverrTier?: CoverrTier;
   semanticEnginePath?: string; semanticModelPath?: string; semanticEnabled?: boolean;
   modelResourcesDir?: string;
   sceneModelPath?: string; sceneModelEnabled?: boolean;
@@ -126,7 +130,8 @@ app.on('before-quit', event => {
 protocol.registerSchemesAsPrivileged([{
   scheme: 'voxweave-preview',
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
-}, { scheme: 'voxweave-library', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
+}, { scheme: 'voxweave-library', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+{ scheme: 'voxweave-online', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
 const GenerateCompositionRequestSchema = DraftPlanRequestSchema.extend({
   language: z.enum(LANGUAGES).optional(),
@@ -357,7 +362,7 @@ async function runCompositionSmoke(window: BrowserWindow, resultPath: string): P
     const start = Date.now();
     const poll = () => {
       const panel = document.querySelector('.library-panel');
-      if (panel && panel.textContent.includes('批量导入') && panel.textContent.includes('Pexels')) {
+      if (panel && panel.textContent.includes('批量导入') && panel.textContent.includes('在线素材')) {
         document.querySelector('[role="dialog"] button[aria-label="关闭"]')?.click(); resolve(true); return;
       }
       if (Date.now() - start > 5000) { reject(new Error('Library manager was not opened')); return; }
@@ -494,7 +499,7 @@ if (cliMode) {
     for (const job of compositionJobs.values()) { job.controller.abort(); job.engine.cancel(); job.planner.dispose(); }
   });
   for (const asset of library.list(10000)) {
-    if (!['pexels', 'openverse'].includes(asset.license.source)) continue;
+    if (!isOnlineSource(asset.license.source) && asset.license.source !== 'openverse') continue;
     const autoTags = refreshedAutomaticTags(asset);
     if (JSON.stringify(autoTags) !== JSON.stringify(asset.autoTags)) {
       library.upsert({ ...asset, autoTags, tags: [...new Set([...autoTags, ...asset.manualTags])] });
@@ -504,24 +509,49 @@ if (cliMode) {
   const mediaProbe = new FallbackMediaProbe(probePath ? new FfprobeMediaProbe(probePath) : undefined);
   const projectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u);
   const idsSchema = z.array(z.string().min(1)).min(1).max(500);
-  const pexels = new PexelsClient(() => {
-    if (process.env.PEXELS_API_KEY) return process.env.PEXELS_API_KEY;
-    const encrypted = settings.get('pexelsKeyEncrypted');
-    return encrypted && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(encrypted, 'base64')) : '';
-  });
   const makeImporter = () => new AssetImporter(library, mediaProbe, path.join(app.getPath('userData'), 'library', 'derived'),
     configuredPaths().ffmpegPath ? new FfmpegThumbnailer(configuredPaths().ffmpegPath!) : undefined);
+  const onlineKeyFields = { pexels: 'pexelsKeyEncrypted', pixabay: 'pixabayKeyEncrypted', coverr: 'coverrKeyEncrypted' } as const;
+  const online = new OnlineMediaService({
+    credentials(source) {
+      if (source === 'wikimedia') return { key: '' };
+      const encrypted = settings.get(onlineKeyFields[source]);
+      const tier = source === 'coverr' ? settings.get('coverrTier') : undefined;
+      if (source === 'pexels' && process.env.PEXELS_API_KEY?.trim()) {
+        return { key: process.env.PEXELS_API_KEY.trim(), storedKey: Boolean(encrypted) };
+      }
+      if (!encrypted) return { key: '', tier };
+      try {
+        if (safeStorage.isEncryptionAvailable()) {
+          const key = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+          return { key, tier, storedKey: true };
+        }
+      } catch { /* Unreadable credentials are reported without details. */ }
+      return { key: '', tier, storedKey: true, unavailable: true };
+    },
+    persistence: new OnlineMediaCache(library.sqlite),
+    directory: path.join(app.getPath('userData'), 'library', 'downloads'),
+    fetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
+    importMedia(item, filePath, minDurationMs, signal) {
+      return makeImporter().import({ filePath, tags: item.tags, license: item.license },
+        { name: item.name, type: item.type, minDurationMs, signal });
+    }
+  });
+  registerOnlineMedia(online, ({ source, key, tier }) => {
+    const field = onlineKeyFields[source];
+    if (key !== undefined) {
+      try {
+        if (!key) settings.delete(field);
+        else {
+          if (!safeStorage.isEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'))
+            throw new Error();
+          settings.set(field, safeStorage.encryptString(key).toString('base64'));
+        }
+      } catch { throw new Error('无法更新本机加密存储'); }
+    }
+    if (source === 'coverr' && tier) settings.set('coverrTier', tier);
+  });
   const music = new OpenverseClient((input, init) => net.fetch(input instanceof Request ? input : String(input), init));
-  const downloadPexelsAsset = async (id: string, signal?: AbortSignal) => {
-    const { item, filePath } = await pexels.download(id, path.join(app.getPath('userData'), 'library', 'downloads'), signal);
-    try {
-      const asset = await makeImporter().import({ filePath, tags: item.tags,
-        license: { status: 'licensed', source: 'pexels', sourceUrl: item.sourceUrl, author: item.author, licenseUrl: 'https://www.pexels.com/license/' } });
-      if (asset.filePath !== filePath) { await rm(filePath, { force: true }); return asset; }
-      const autoTags = [...new Set([...asset.autoTags, ...item.tags])];
-      return library.upsert({ ...asset, name: item.name, autoTags, manualTags: [], tags: autoTags });
-    } catch (error) { await rm(filePath, { force: true }); throw error; }
-  };
   const makeRenderer = (plan: EditPlan) => new HyperframesPreviewRenderer(assetId => {
     if (assetId === 'source-video' && plan.input.sourceVideoPath) return plan.input.sourceVideoPath;
     const asset = library.byId(assetId);
@@ -809,24 +839,20 @@ if (cliMode) {
       const selected = fillShortLocalVideos(selectBroll(resolved, library, undefined,
         { avoidAssetIds: settings.get('recentVisualAssetIds') ?? [], videoOnly: true }), library, { avoidAssetIds: settings.get('recentVisualAssetIds') ?? [] });
       if (selected !== resolved) { resolved = selected; await editPlans.save(resolved); }
-      const onlineProvider: AutomaticMediaProvider | undefined = process.env.PEXELS_API_KEY || settings.get('pexelsKeyEncrypted') ? {
-        search: async (query, type, orientation, signal) => (await pexels.search({ query, type, page: 1, orientation }, signal)).items,
-        download: downloadPexelsAsset
-      } : undefined;
       const selectedUrls = () => resolved.scenes.flatMap(scene => {
-        const url = scene.visual.assetId && library.byId(scene.visual.assetId)?.license.sourceUrl;
-        return url ? [url] : [];
+        const asset = scene.visual.assetId ? library.byId(scene.visual.assetId) : undefined;
+        return asset ? [asset.license, ...(asset.additionalLicenses ?? [])].flatMap(license => license.sourceUrl ? [license.sourceUrl] : []) : [];
       });
-      if (onlineProvider) {
-        emit('selecting', 0.80, '本地素材不足的分镜，正在搜索并下载 Pexels 素材…');
-        const onlineSelected = await fillOnlineMedia(resolved, onlineProvider,
+      if (resolved.scenes.some(scene => scene.visual.type === 'kinetic-text')) {
+        emit('selecting', 0.80, '正在为本地素材不足的分镜搜索在线画面…');
+        const onlineSelected = await fillOnlineMedia(resolved, online,
           controller.signal, (fraction, message) => emit('selecting', .80 + .04 * fraction, message), selectedUrls(), { types: ['video'] });
         if (onlineSelected !== resolved) { resolved = onlineSelected; await editPlans.save(resolved); }
       }
       const filled = selectBroll(splitUnfilledScenes(resolved), library, undefined, { avoidAssetIds: settings.get('recentVisualAssetIds') ?? [] });
       if (filled !== resolved) { resolved = filled; await editPlans.save(resolved); }
-      if (onlineProvider && resolved.scenes.some(scene => scene.visual.type === 'kinetic-text')) {
-        const images = await fillOnlineMedia(resolved, onlineProvider, controller.signal,
+      if (resolved.scenes.some(scene => scene.visual.type === 'kinetic-text')) {
+        const images = await fillOnlineMedia(resolved, online, controller.signal,
           (fraction, message) => emit('selecting', .84 + .02 * fraction, message), selectedUrls(), { types: ['image'] });
         if (images !== resolved) { resolved = images; await editPlans.save(resolved); }
       }
@@ -960,17 +986,6 @@ if (cliMode) {
     if (projectLocks.size || compositionJobs.size) throw new Error('请等待当前任务完成后移除素材');
     for (const id of idsSchema.parse(values)) library.remove(id);
   });
-  ipcMain.handle('pexels:status', () => ({ configured: Boolean(process.env.PEXELS_API_KEY || settings.get('pexelsKeyEncrypted')) }));
-  ipcMain.handle('pexels:configure', (_event, value: unknown) => {
-    const key = z.string().trim().max(300).parse(value);
-    if (!key) { settings.delete('pexelsKeyEncrypted'); return; }
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，可通过 PEXELS_API_KEY 环境变量配置');
-    settings.set('pexelsKeyEncrypted', safeStorage.encryptString(key).toString('base64'));
-  });
-  ipcMain.handle('pexels:search', (_event, value) => pexels.search(value));
-  ipcMain.handle('pexels:download', async (_event, value: unknown) => {
-    return downloadPexelsAsset(z.string().max(100).parse(value));
-  });
   ipcMain.handle('music:search', (_event, value) => music.search(value));
   ipcMain.handle('music:download', async (_event, value: unknown) => {
     const { item, filePath } = await music.download(z.string().uuid().parse(value), path.join(app.getPath('userData'), 'library', 'downloads'));
@@ -984,9 +999,9 @@ if (cliMode) {
   });
   ipcMain.handle('library:open-source', (_event, value: unknown) => {
     const url = z.string().url().parse(value);
-    if (url !== PIXABAY_VIDEO_PAGE) {
-      try { assertPexelsUrl(url, 'page'); } catch { assertMusicUrl(url, 'page'); }
-    }
+    const onlineHosts = ['pexels.com', 'www.pexels.com', 'pixabay.com', 'www.pixabay.com',
+      'coverr.co', 'www.coverr.co', 'commons.wikimedia.org', 'creativecommons.org', 'www.creativecommons.org'];
+    if (!httpsUrl(url, onlineHosts)) assertMusicUrl(url, 'page');
     return shell.openExternal(url);
   });
   ipcMain.handle('composition:captions', async (_event, idValue: unknown, value: unknown) => {

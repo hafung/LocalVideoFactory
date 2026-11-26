@@ -65,7 +65,7 @@ export class LibraryDatabase {
         JSON.stringify(asset.license), asset.createdAt
       );
       this.sqlite.prepare('UPDATE assets SET metadata_json=? WHERE id=?').run(
-        JSON.stringify({ autoTags: asset.autoTags, manualTags: asset.manualTags }), asset.id);
+        JSON.stringify({ autoTags: asset.autoTags, manualTags: asset.manualTags, additionalLicenses: asset.additionalLicenses }), asset.id);
       this.sqlite.prepare('DELETE FROM asset_fts WHERE asset_id=?').run(asset.id);
       this.sqlite.prepare('INSERT INTO asset_fts(asset_id,name,tags,transcript) VALUES(?,?,?,?)')
         .run(asset.id, asset.name, asset.tags.join(' '), asset.transcript);

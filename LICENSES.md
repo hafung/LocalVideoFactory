@@ -2,6 +2,8 @@
 
 VoxWeave application code is provided under the MIT License.
 
+The Coverr logo is the white logo supplied by [Coverr's developer documentation](https://api.coverr.co/docs/) for API attribution. The Coverr brand belongs to Coverr.
+
 The optional inference backend is [gabriele-mastrapasqua/qwen3-tts](https://github.com/gabriele-mastrapasqua/qwen3-tts), Copyright (c) 2025 Gabriele Mastrapasqua, licensed under the MIT License.
 
 Qwen3-TTS 1.7B CustomVoice and Base model weights are published by the Qwen team under Apache License 2.0. The offline resource directory keeps both models at pinned revisions with their own manifests and Apache notices. Base extracts cloned voice profiles; CustomVoice reads both preset and cloned voices through the native engine's cross-model voice support.

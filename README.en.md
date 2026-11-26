@@ -46,7 +46,7 @@ Local AI storyboarding and visual search intent
           ↓
 TTS narration → audio-driven timing → SenseVoice caption alignment
           ↓
-Content-matched source clips / local B-roll / Pexels / motion typography
+Content-matched source clips / local B-roll / online stock / motion typography
           ↓
 Word or phrase highlights + narration / original audio / BGM mix
           ↓
@@ -61,7 +61,7 @@ Preview → scene-card and caption edits → MP4 / MP3 / SRT / ASS
 | 👁️ **Multimodal source selection** | Sampled-frame understanding, source speech, and speech/shot boundaries help select footage that matches the narration. |
 | 🎙️ **Narration and voice cloning** | Qwen3-TTS 1.7B generates speech locally; reference audio produces reusable `.qvoice` profiles. |
 | ⏱️ **Audio-driven timing** | Real narration duration determines scene and caption timing, with visible estimated-timing fallback when alignment is unavailable. |
-| 🎞️ **Automatic B-roll** | Prefer local or Pexels video, use short image holds, and fill remaining gaps with motion typography. |
+| 🎞️ **Automatic B-roll** | Prefer local or online video, use short image holds, and fill remaining gaps with motion typography. |
 | ✨ **Dynamic captions** | Four visual styles, word/phrase highlights, editable groups, and SRT/ASS exports. Caption edits reuse the narration. |
 | 🎵 **Open music discovery** | Search, preview, download, and select Openverse music. CC0 by default; optional CC BY, with credits and source metadata preserved. |
 | 🎚️ **Three-source audio mixing** | Separate narration, source-audio, and BGM levels, plus automatic background ducking during speech. |
@@ -113,7 +113,7 @@ Screenshots were captured from the real Windows application and a generated demo
 | **SenseVoice + Silero VAD** | Source transcription, speech segmentation, and caption alignment |
 | **Qwen3 Embedding 0.6B** | Semantic ranking of existing media names, tags, and descriptions |
 | **HyperFrames + FFmpeg** | Preview, rendering, audio mixing, and video export |
-| **SQLite + Pexels + Openverse** | Local indexing, online visual assets, and openly licensed music |
+| **SQLite + Pexels / Pixabay / Coverr / Wikimedia Commons + Openverse** | Local indexing, online visual assets, and openly licensed music |
 
 Current desktop distribution and launch scripts target **Windows x64**. A discrete GPU is optional; CPU processing time and memory needs depend on the models and input length. Initial model preparation and online discovery require internet access.
 
