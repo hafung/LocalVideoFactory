@@ -2,18 +2,19 @@ import '@hyperframes/player';
 import './library.css';
 import { LibraryPanel } from './LibraryPanel';
 import { ModelProgress } from './ModelProgress';
+import { Modal } from './Modal';
+import { ScenePicker } from './ScenePicker';
 import { PublishPanel } from './PublishPanel';
 import type { HyperframesPlayer } from '@hyperframes/player';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Check, ChevronDown, Download, Film, FolderOpen, Image,
   Play, Plus, RefreshCw, Settings2, Sparkles, Square, Upload, Video, WandSparkles, X
 } from 'lucide-react';
 import { estimateDuration } from '../shared/markup';
 import type { EditPlan, CaptionCue } from '../shared/edit-plan';
-import type { MediaAsset, OnlineAsset } from '../shared/library';
-import type { SceneCandidate, SceneCandidateResult, SceneChoice } from '../shared/scene-candidates';
+import type { MediaAsset } from '../shared/library';
+import type { SceneChoice } from '../shared/scene-candidates';
 import type { CompositionProgressEvent, EngineStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
 import type { ModelSetupStatus, OptionalModel, OptionalModelStatus } from '../shared/model-downloads';
 import type { PublishDraft } from '../shared/publishing';
@@ -116,20 +117,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   const [preview, setPreview] = useState<Preview>();
   const [previewError, setPreviewError] = useState<string>();
   const [replacingScene, setReplacingScene] = useState<string>();
-  const [sceneNotice, setSceneNotice] = useState<{ sceneId: string; message: string }>();
   const [candidateSceneId, setCandidateSceneId] = useState<string>();
-  const [candidateResult, setCandidateResult] = useState<SceneCandidateResult>();
-  const [candidateQuery, setCandidateQuery] = useState('');
-  const [candidateThroughSceneId, setCandidateThroughSceneId] = useState<string>();
-  const [candidateLoading, setCandidateLoading] = useState(false);
-  const [candidateError, setCandidateError] = useState('');
-  const [candidatePreview, setCandidatePreview] = useState<SceneCandidate>();
-  const [onlineCandidates, setOnlineCandidates] = useState<OnlineAsset[]>([]);
-  const [onlineLoading, setOnlineLoading] = useState(false);
-  const [onlineError, setOnlineError] = useState('');
-  const [onlineQuery, setOnlineQuery] = useState('');
-  const [downloadingOnlineId, setDownloadingOnlineId] = useState<string>();
-  const candidateSearchToken = useRef(0);
   const playerRef = useRef<HyperframesPlayer>(null);
   const finishedExport = useRef<string | undefined>(undefined);
 
@@ -263,9 +251,6 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
       Math.max(0, ...plan.scenes.filter(scene => scene.visual.type === 'source').map(scene => scene.visual.sourceOutMs ?? 0))
     : 0;
   const candidateStartIndex = plan?.scenes.findIndex(scene => scene.id === candidateSceneId) ?? -1;
-  const candidateEndIndex = candidateThroughSceneId && plan ? plan.scenes.findIndex(scene => scene.id === candidateThroughSceneId) : candidateStartIndex;
-  const candidateDurationMs = plan && candidateStartIndex >= 0 && candidateEndIndex >= candidateStartIndex
-    ? plan.scenes[candidateEndIndex].endMs - plan.scenes[candidateStartIndex].startMs : 0;
   const compositionRate = plan?.output.playbackRate ?? 1;
   const compositionSeconds = (milliseconds: number) => (milliseconds / compositionRate / 1000).toFixed(1);
 
@@ -354,77 +339,17 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     finally { setExportPending(false); }
   }
 
-  async function loadOnlineCandidates(query: string, sceneId: string, throughSceneId: string | undefined, token: number) {
-    setOnlineCandidates([]); setOnlineError(''); setOnlineQuery('');
-    if (!query.trim()) { setOnlineLoading(false); return; }
-    setOnlineLoading(true);
-    try {
-      const desktop = api()!;
-      const status = await desktop.pexelsStatus();
-      if (token !== candidateSearchToken.current) return;
-      if (!status.configured) { setOnlineError('填写 Pexels 密钥后，可在这里查找视频和图片。'); return; }
-      const orientation = plan?.scenes.find(scene => scene.id === sceneId)?.visual.intent.orientation;
-      const results = await Promise.allSettled(['video', 'image'].map(type => desktop.searchPexels({
-        query, type: type as 'video' | 'image', page: 1, orientation
-      })));
-      if (token !== candidateSearchToken.current) return;
-      const found = results.flatMap(result => result.status === 'fulfilled' ? result.value.items : []);
-      const first = plan?.scenes.findIndex(scene => scene.id === sceneId) ?? -1;
-      const last = throughSceneId ? plan?.scenes.findIndex(scene => scene.id === throughSceneId) ?? first : first;
-      const duration = plan && first >= 0 && last >= first ? plan.scenes[last].endMs - plan.scenes[first].startMs : 0;
-      const priority = (item: OnlineAsset) => item.type === 'video' ? (item.durationMs ?? 0) >= duration ? 0 : 2 : 1;
-      setOnlineCandidates(found.sort((left, right) => priority(left) - priority(right)));
-      const successful = results.find(result => result.status === 'fulfilled');
-      setOnlineQuery(successful?.status === 'fulfilled' ? successful.value.query : query);
-      if (results.every(result => result.status === 'rejected')) {
-        setOnlineError(results[0].status === 'rejected' ? String(results[0].reason) : 'Pexels 搜索失败');
-      }
-    } catch (error) { if (token === candidateSearchToken.current) setOnlineError(error instanceof Error ? error.message : String(error)); }
-    finally { if (token === candidateSearchToken.current) setOnlineLoading(false); }
-  }
-
-  async function loadCandidates(sceneId: string, query = '', throughSceneId = candidateThroughSceneId) {
-    if (!projectId) return;
-    const token = ++candidateSearchToken.current;
-    setCandidateLoading(true); setCandidateError('');
-    try {
-      const result = await api()!.listSceneCandidates(projectId, sceneId, query, throughSceneId);
-      if (token !== candidateSearchToken.current) return;
-      setCandidateResult(result); setCandidatePreview(result.candidates[0]);
-      void loadOnlineCandidates(result.onlineQuery || result.query.split(/\s+/u).slice(0, 4).join(' '), sceneId, throughSceneId, token);
-    } catch (error) { if (token === candidateSearchToken.current) setCandidateError(error instanceof Error ? error.message : String(error)); }
-    finally { if (token === candidateSearchToken.current) setCandidateLoading(false); }
-  }
-
-  function openCandidates(sceneId: string) {
-    candidateSearchToken.current++;
-    setCandidateSceneId(sceneId); setCandidateResult(undefined); setCandidatePreview(undefined); setCandidateQuery('');
-    setCandidateThroughSceneId(undefined); setOnlineCandidates([]); setOnlineError(''); setOnlineLoading(false);
-    void loadCandidates(sceneId, '', undefined);
-  }
-
-  async function downloadAndApply(item: OnlineAsset) {
-    if (!candidateSceneId) return;
-    setDownloadingOnlineId(item.id); setCandidateError('');
-    try {
-      const asset = await api()!.downloadPexels(item.id);
-      await refreshAssets();
-      await replaceScene(candidateSceneId, { type: 'asset', assetId: asset.id,
-        sourceInMs: asset.type === 'video' ? 0 : undefined, throughSceneId: candidateThroughSceneId });
-    } catch (error) { setCandidateError(error instanceof Error ? error.message : String(error)); }
-    finally { setDownloadingOnlineId(undefined); }
-  }
-
   async function replaceScene(sceneId: string, choice: SceneChoice) {
     if (!projectId) return;
     setReplacingScene(sceneId);
-    setSceneNotice(undefined);
     try {
-      const result = await api()?.replaceScene(projectId, sceneId, choice);
-      if (result?.status === 'unavailable') setSceneNotice({ sceneId, message: result.message });
-      else if (result) { setPlan(result.plan); setPreview(result.preview); setPreviewError(undefined); setExportProgress(undefined); setCandidateSceneId(undefined); }
-    } catch (error) {
-      setCandidateError(error instanceof Error ? error.message : String(error));
+      const result = await api()!.replaceScene(projectId, sceneId, choice);
+      if (result.status === 'unavailable') throw new Error(result.message);
+      setPlan(result.plan);
+      setPreview(result.preview);
+      setPreviewError(undefined);
+      setExportProgress(undefined);
+      setCandidateSceneId(undefined);
     } finally { setReplacingScene(undefined); }
   }
 
@@ -509,7 +434,6 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   function closeSetup() { setSetupDismissed(true); setSetupRequested(false); }
   function retryBasicModels() { setModelImportError(''); void api()?.retryModelSetup(); }
   function openOnlineLibrary() {
-    candidateSearchToken.current++;
     closeSetup(); setCandidateSceneId(undefined); openDialog('online');
   }
 
@@ -598,30 +522,35 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
             <small>更新字幕无需重新生成旁白</small>
           </div>
           {captionError && !captionEditor && <p className="field-error" role="alert">{captionError}</p>}
-          <div className="export-actions"><button className="export-primary" disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportVideo()}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
-            <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('narration-mp3')}>导出旁白 MP3</button>
-            <button disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportArtifact('mixed-mp3')}>导出混音 MP3</button>
-            <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('srt')}>导出 SRT</button>
-            <button disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('ass')}>导出 ASS</button>
-            {exportJob && <button onClick={() => api()?.cancelExport(exportJob)}>取消导出</button>}
-            {exportProgress?.outputPath && <button onClick={() => api()?.reveal(exportProgress.outputPath!)}>打开成品所在文件夹</button>}
+          <div className="export-actions" role="group" aria-label="导出文件">
+            <button className="export-primary" disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportVideo()}>{exportJob ? '正在导出…' : '导出 MP4'}</button>
+            <button aria-label="导出旁白 MP3" title="导出旁白 MP3" disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('narration-mp3')}>旁白 MP3</button>
+            <button aria-label="导出混音 MP3" title="导出混音 MP3" disabled={working || !!replacingScene || needsGeneration} onClick={() => void exportArtifact('mixed-mp3')}>混音 MP3</button>
+            <button aria-label="导出 SRT" title="导出 SRT" disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('srt')}>SRT</button>
+            <button aria-label="导出 ASS" title="导出 ASS" disabled={working || !!replacingScene || compositionDirty} onClick={() => void exportArtifact('ass')}>ASS</button>
           </div>
+          {(exportJob || exportProgress) && <div className="export-progress">
+            <div className="export-progress-header">
+              {exportProgress && <span role={exportProgress.phase === 'error' ? 'alert' : 'status'}>{exportProgress.message}</span>}
+              {exportJob && <button onClick={() => api()?.cancelExport(exportJob)}>取消导出</button>}
+              {exportProgress?.outputPath && <button onClick={() => api()?.reveal(exportProgress.outputPath!)}>打开成品所在文件夹</button>}
+            </div>
+            {exportJob && <progress max="1" value={exportProgress?.progress}/>}
+          </div>}
           <PublishPanel key={plan.id} title={plan.scenes[0]?.script} evidence={plan.captions.map(cue => cue.text).join('\n') || plan.input.script}
             durationMs={preview.durationMs} width={preview.width} height={preview.height} disabled={working || !!replacingScene || needsGeneration}
             playhead={() => playerRef.current?.currentTime} applyAspect={setAspectRatio} onExport={draft => void exportVideo(draft)}/>
           {needsGeneration && <small>设置已修改，点击高亮的“生成视频”更新成片。</small>}
-          {exportProgress && <div className="export-progress" role={exportProgress.phase === 'error' ? 'alert' : 'status'}><span>{exportProgress.message}</span>{exportJob && <progress max="1" value={exportProgress.progress}/>}</div>}
         </div>}
       </section>
       {plan && <aside className="storyboard" aria-label="分镜列表">
-        <div className="storyboard-title"><span>分镜卡片</span><small>可让几句旁白共用一个画面</small></div>
+        <div className="storyboard-title"><span>分镜卡片</span></div>
         <div className="scene-list">{plan.scenes.map((scene, index) => <article key={scene.id} className="scene-card">
           <span className="scene-number">{String(index + 1).padStart(2, '0')}</span>
           <span className="scene-type">{scene.visual.type === 'kinetic-text' ? <Sparkles size={14}/> : scene.visual.type === 'image' ? <Image size={14}/> : <Video size={14}/>}</span>
           <div><b>{scene.script}</b><small>成片 {compositionSeconds(scene.startMs)}–{compositionSeconds(scene.endMs)} 秒 · {scene.visual.type === 'source' ? `原视频 ${((scene.visual.sourceInMs ?? 0) / 1000).toFixed(1)}–${((scene.visual.sourceOutMs ?? 0) / 1000).toFixed(1)} 秒` : scene.visual.type === 'kinetic-text' && originalVideoDurationMs && scene.startMs >= originalVideoDurationMs ? '原视频结束后的补画面' : scene.visual.type}{index > 0 && scene.visual.assetId && scene.visual.assetId === plan.scenes[index - 1].visual.assetId &&
             (scene.visual.type === 'image' || scene.visual.sourceInMs === plan.scenes[index - 1].visual.sourceOutMs) ? ' · 延续上一画面' : ''}</small>{scene.visual.type === 'source' && scene.visual.sourceMatch && <small title={scene.visual.sourceMatch.reason}>选段依据：{scene.visual.sourceMatch.reason}</small>}</div>
-          <button onClick={() => openCandidates(scene.id)} disabled={working || Boolean(replacingScene)}><RefreshCw size={14}/> 换画面</button>
-          {sceneNotice?.sceneId === scene.id && <p className="scene-notice" role="status">{sceneNotice.message}</p>}
+          <button onClick={() => setCandidateSceneId(scene.id)} disabled={working || Boolean(replacingScene)}><RefreshCw size={14}/> 换画面</button>
         </article>)}</div>
       </aside>}
     </main>
@@ -637,65 +566,11 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
       <button className="modal-primary" disabled={captionBusy} onClick={() => void applyCaptions(plan.captions.filter(cue => !cue.text.includes('|')).map(cue => ({ cueId: cue.id, text: captionEdits[cue.id] ?? captionAnnotation(cue) })))}>{captionBusy ? '正在更新字幕…' : '保存分组并更新预览'}</button>
     </Modal>}
 
-    {candidateSceneId && <Modal title="选择分镜画面" subtitle={plan?.scenes.find(scene => scene.id === candidateSceneId)?.script ?? ''} close={() => {
-      if (replacingScene || downloadingOnlineId) return;
-      candidateSearchToken.current++; setCandidateSceneId(undefined);
-    }} wide>
-      {plan && candidateStartIndex >= 0 && <label className="candidate-scope">画面覆盖范围
-        <select value={candidateThroughSceneId ?? ''} disabled={!!downloadingOnlineId || !!replacingScene} onChange={event => {
-          const through = event.target.value || undefined; setCandidateThroughSceneId(through);
-          void loadCandidates(candidateSceneId, candidateQuery, through);
-        }}>
-          {plan.scenes.slice(candidateStartIndex, candidateStartIndex + 10).map((scene, offset) =>
-            <option key={scene.id} value={offset ? scene.id : ''}>{offset ? `到第 ${candidateStartIndex + offset + 1} 句` : '仅这一句'} · 成片 {compositionSeconds(scene.endMs - plan.scenes[candidateStartIndex].startMs)} 秒</option>)}
-        </select><small>字幕仍逐句显示；所选画面连续覆盖这段旁白，并使用成片的 {compositionRate}× 倍速。</small>
-      </label>}
-      {plan?.input.sourceVideoPath && candidateStartIndex >= 0 && <p className="candidate-message">
-        {plan.scenes.slice(candidateStartIndex, candidateEndIndex + 1).some(scene => scene.visual.type === 'source')
-          ? '当前范围含原视频画面；替换只作用于所选时间段，其他原视频时间段保持原样。'
-          : originalVideoDurationMs && plan.scenes[candidateStartIndex].startMs >= originalVideoDurationMs
-            ? '这段旁白已超出原视频时长，使用额外素材或动态文字补画面。'
-            : '替换只作用于所选时间段，其他原视频时间段保持原样。'}
-      </p>}
-      <form className="candidate-search" onSubmit={event => { event.preventDefault(); void loadCandidates(candidateSceneId, candidateQuery); }}>
-        <label>画面关键词<input value={candidateQuery} maxLength={150} disabled={!!downloadingOnlineId || !!replacingScene} onChange={event => setCandidateQuery(event.target.value)} placeholder="留空，按当前分镜自动推荐"/></label>
-        <button disabled={candidateLoading || !!downloadingOnlineId || !!replacingScene} type="submit">搜索</button>
-      </form>
-      {candidateLoading && <p className="candidate-message" role="status">正在查找本地画面…</p>}
-      {candidateError && <p className="field-error" role="alert">{candidateError}</p>}
-      {candidateResult && <><p className="candidate-message">{candidateResult.query ? `检索方向：${candidateResult.query}（${candidateResult.querySource === 'manual' ? '手动指定' : candidateResult.querySource === 'story' ? '整篇文案' : '当前分镜'}）` : '当前没有明确画面主题'} · 覆盖成片 {compositionSeconds(candidateDurationMs)} 秒{candidateResult.notice ? ` · ${candidateResult.notice}` : ''}</p>
-        <h3 className="candidate-section-title">本地素材 <small>需要原素材 {(candidateDurationMs / 1000).toFixed(1)} 秒；视频只取所需片段，过短的不列入候选。</small></h3>
-        <div className="candidate-layout">
-          <div className="candidate-grid">{candidateResult.candidates.map((candidate, index) => <button type="button" key={`${candidate.asset.id}-${candidate.choice.type === 'asset' ? candidate.choice.sourceInMs ?? 0 : index}`} className={candidatePreview === candidate ? 'active' : ''} onClick={() => setCandidatePreview(candidate)}>
-            {candidate.asset.thumbnailPath ? <img src={`voxweave-library://${candidate.asset.id}/thumbnail`} alt=""/> : <span className="candidate-placeholder">{candidate.asset.type === 'video' ? '视频' : '图片'}</span>}
-            <span><b>{candidate.asset.name}</b><small>{candidate.match === 'related' ? '关键词相关' : candidate.match === 'semantic' ? '素材文字语义排序' : candidate.match === 'alternate' ? '同一视频其他片段' : '填充画面'}{candidate.choice.type === 'asset' && candidate.asset.type === 'video' ? ` · ${((candidate.choice.sourceInMs ?? 0) / 1000).toFixed(1)}s 起` : ''}</small></span>
-          </button>)}{!candidateResult.candidates.length && <p>素材库中没有满足时长和授权条件的其他画面。</p>}</div>
-          <div className="candidate-detail">{candidatePreview ? <>
-            {candidatePreview.asset.type === 'video' ? <video key={`${candidatePreview.asset.id}-${candidatePreview.choice.type === 'asset' ? candidatePreview.choice.sourceInMs : 0}`} src={`voxweave-library://${candidatePreview.asset.id}/media`} controls preload="metadata" onLoadedMetadata={event => { event.currentTarget.playbackRate = compositionRate; if (candidatePreview.choice.type === 'asset') event.currentTarget.currentTime = (candidatePreview.choice.sourceInMs ?? 0) / 1000; }} onTimeUpdate={event => { if (candidatePreview.sourceOutMs !== undefined && event.currentTarget.currentTime >= candidatePreview.sourceOutMs / 1000) event.currentTarget.pause(); }}/>
-              : <img src={`voxweave-library://${candidatePreview.asset.id}/media`} alt={candidatePreview.asset.name}/>}
-            <b>{candidatePreview.asset.name}</b><small>{candidatePreview.reasons.join(' · ')}</small>
-            <button className="modal-primary" disabled={!!replacingScene} onClick={() => replaceScene(candidateSceneId, candidatePreview.choice)}>{replacingScene ? '正在更新预览…' : '应用这个画面'}</button>
-          </> : <p>选择左侧素材预览。也可以使用动态文字。</p>}
-            <button disabled={!!replacingScene || plan?.scenes.find(scene => scene.id === candidateSceneId)?.visual.type === 'kinetic-text' && !candidateThroughSceneId} onClick={() => replaceScene(candidateSceneId, { type: 'kinetic-text', throughSceneId: candidateThroughSceneId })}>使用动态文字</button>
-          </div>
-        </div>
-        <h3 className="candidate-section-title">Pexels 在线素材 <small>同时搜索视频和图片；只在选择后下载。<button onClick={() => void api()?.openSource('https://www.pexels.com/')}>素材由 Pexels 提供</button></small></h3>
-        {onlineLoading && <p className="candidate-message" role="status">正在搜索 Pexels 视频和图片…</p>}
-        {onlineQuery && <p className="candidate-message">Pexels 搜索词：{onlineQuery}</p>}
-        {onlineError && <p className="candidate-message" role="status">{onlineError} <button onClick={openOnlineLibrary}>查看在线素材选项</button></p>}
-        {!!onlineCandidates.length && <div className="candidate-online-grid">{onlineCandidates.map(item => {
-          const tooShort = item.type === 'video' && (item.durationMs ?? 0) < candidateDurationMs;
-          return <article key={item.id} className="candidate-online-card">
-            <img src={item.thumbnailUrl} alt="" loading="lazy"/>
-            <div><b>{item.name}</b><small>{item.type === 'video' ? `视频 · ${((item.durationMs ?? 0) / 1000).toFixed(1)} 秒` : '图片'} · {item.author}</small>
-              <small>{tooShort ? '原素材时长不足，不能直接使用' : item.type === 'video' ? `取原素材前 ${(candidateDurationMs / 1000).toFixed(1)} 秒，成片 ${compositionSeconds(candidateDurationMs)} 秒` : `成片保持 ${compositionSeconds(candidateDurationMs)} 秒`}</small>
-              <button disabled={tooShort || !!downloadingOnlineId || !!replacingScene} onClick={() => void downloadAndApply(item)}>{downloadingOnlineId === item.id ? '正在下载并应用…' : '下载并应用'}</button>
-              <button className="candidate-source-link" onClick={() => void api()?.openSource(item.sourceUrl)}>查看作者与来源</button>
-            </div>
-          </article>;
-        })}</div>}
-      </>}
-    </Modal>}
+    {candidateSceneId && plan && projectId && candidateStartIndex >= 0 && <ScenePicker key={`${projectId}-${candidateSceneId}`}
+      projectId={projectId} scenes={plan.scenes.slice(candidateStartIndex, candidateStartIndex + 10)}
+      playbackRate={compositionRate} onClose={() => setCandidateSceneId(undefined)}
+      onOpenOnlineLibrary={openOnlineLibrary} onAssetsChanged={refreshAssets}
+      onApply={choice => replaceScene(candidateSceneId, choice)}/>}
 
     {cloneOpen && <Modal title="克隆音色" subtitle="用一段参考录音制作自己的旁白音色。" close={() => !cloneBusy && setCloneOpen(false)}>
       {optionalModels && !optionalModels.clone.installed ? <div className="settings-form">
@@ -795,28 +670,4 @@ function Feature({ title, description, status, ready, children }: {
 
 function PathField({ label, value, placeholder, choose }: { label: string; value: string; placeholder: string; choose: () => void }) {
   return <label className="path-field"><span>{label}</span><div><input readOnly value={value} placeholder={placeholder}/><button onClick={choose}><FolderOpen size={15}/> 浏览</button></div></label>;
-}
-
-function Modal({ title, subtitle, close, children, wide, className = '', workspace }: {
-  title: string; subtitle: string; close: () => void; children: React.ReactNode; wide?: boolean; className?: string; workspace?: boolean;
-}) {
-  const ref = useRef<HTMLElement>(null);
-  const titleId = useId();
-  const closeRef = useRef(close); closeRef.current = close;
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>('button')?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
-      if (event.key !== 'Tab') return;
-      const nodes = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]') ?? []).filter(node => node.getClientRects().length);
-      const first = nodes[0], last = nodes.at(-1);
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    document.addEventListener('keydown', keydown);
-    return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
-  }, []);
-  const modal = <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && close()}><section ref={ref} className={`modal ${wide ? 'library-modal' : ''} ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}><header><div><h2 id={titleId}>{title}</h2><p>{subtitle}</p></div><button className="icon-button" aria-label="关闭" onClick={close}><X size={18}/></button></header>{children}</section></div>;
-  return workspace ? createPortal(modal, document.body) : modal;
 }

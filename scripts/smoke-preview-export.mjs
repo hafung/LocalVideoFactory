@@ -115,11 +115,12 @@ try {
     assert.ok(labels[0].includes('原视频 0.0–2.0 秒'), 'source timestamps must stay in the source clock');
     assert.ok(labels[2].includes(`成片 ${(4 / rate).toFixed(1)}–${(6 / rate).toFixed(1)} 秒`));
     await page.click('.scene-card button');
-    await page.waitForSelector('.candidate-scope');
-    assert.ok(await page.$eval('.candidate-scope option', (element, rate) => element.textContent.includes(`成片 ${(2 / rate).toFixed(1)} 秒`), rate));
-    await page.select('.candidate-scope select', saved.scenes[2].id);
-    await page.waitForFunction(id => window.__calls.some(call => call.candidates?.throughSceneId === id), {}, saved.scenes[2].id);
-    await page.waitForFunction(rate => [...document.querySelectorAll('.candidate-message')].some(element => element.textContent.includes(`覆盖成片 ${(6 / rate).toFixed(1)} 秒`)), {}, rate);
+    await page.waitForSelector('.scene-picker-extend');
+    assert.ok(await page.$eval('.scene-picker-summary', (element, rate) => element.textContent.includes(`${(2 / rate).toFixed(1)} 秒`), rate));
+    await page.click('.scene-picker-extend');
+    await page.click('.scene-picker-extend');
+    await page.waitForFunction(id => window.__calls.findLast(call => call.candidates)?.candidates.throughSceneId === id, {}, saved.scenes[2].id);
+    await page.waitForFunction(rate => document.querySelector('.scene-picker-summary')?.textContent.includes(`3 句共用一个画面 · ${(6 / rate).toFixed(1)} 秒`), {}, rate);
     await page.keyboard.press('Escape');
     await page.evaluate(() => { const player = document.querySelector('hyperframes-player'); player.seek(0); player.play(); });
     await new Promise(resolve => setTimeout(resolve, 250));
@@ -165,7 +166,7 @@ try {
     await writeFile(path.join(output, `captions-${rate}x.ass`), exportAss(saved));
     checks.push({ rate, previewTime: first, ...state, durationMs: info.durationMs });
   }
-  for (const label of ['导出旁白 MP3', '导出混音 MP3', '导出 SRT', '导出 ASS']) await page.$$eval('button', (buttons, label) => buttons.find(button => button.textContent === label).click(), label);
+  for (const label of ['导出旁白 MP3', '导出混音 MP3', '导出 SRT', '导出 ASS']) await page.click(`.export-actions [aria-label="${label}"]`);
   await page.waitForFunction(() => window.__calls.filter(call => call.artifact).length === 4);
   assert.deepEqual(await page.evaluate(() => window.__calls.filter(call => call.artifact).map(call => call.artifact)), ['narration-mp3', 'mixed-mp3', 'srt', 'ass']);
   assert.deepEqual(errors, []);
