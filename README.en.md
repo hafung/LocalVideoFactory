@@ -26,6 +26,8 @@ Two local workflows in one desktop app, with a shared media library and creative
 
 ## Watch the project demo
 
+**[Watch the FrameSkiff product promo (MP4)](docs/demos/FrameSkiff_Promo_1080p60.mp4?raw=true)**
+
 | Script to video | Talking-head before and after |
 | --- | --- |
 | [Play MP4](docs/demos/frameskiff-script.mp4?raw=true) · [Cover](docs/demos/frameskiff-script.jpg) · [Post copy](docs/demos/frameskiff-script-post.txt) | [Play MP4](docs/demos/frameskiff-talk.mp4?raw=true) · [Cover](docs/demos/frameskiff-talk.jpg) · [Post copy](docs/demos/frameskiff-talk-post.txt) |
