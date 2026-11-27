@@ -26,7 +26,7 @@
 
 ## 先看项目演示
 
-**[观看帧舟产品宣传片（MP4）](docs/demos/FrameSkiff_Promo_1080p60.mp4?raw=true)**
+https://github.com/user-attachments/assets/723e1f45-4b08-49d9-9ba9-29a704ffc896
 
 | 文案成片 | 口播精剪前后对照 |
 | --- | --- |

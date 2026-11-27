@@ -1,6 +1,6 @@
 # 帧舟成片演示
 
-**[观看帧舟产品宣传片（MP4）](FrameSkiff_Promo_1080p60.mp4?raw=true)**
+https://github.com/user-attachments/assets/723e1f45-4b08-49d9-9ba9-29a704ffc896
 
 下载仓库后，打开 [样片播放器](index.html) 即可播放两条有声竖屏样片。每条附带应用发布包生成的封面和可复制文案。
 
