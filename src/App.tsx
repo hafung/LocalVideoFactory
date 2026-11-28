@@ -16,8 +16,8 @@ import { estimateDuration } from '../shared/markup';
 import type { EditPlan, CaptionCue } from '../shared/edit-plan';
 import type { MediaAsset } from '../shared/library';
 import type { SceneChoice } from '../shared/scene-candidates';
-import type { CompositionProgressEvent, EngineStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
-import type { ModelSetupStatus, OptionalModel, OptionalModelStatus } from '../shared/model-downloads';
+import type { CompositionProgressEvent, EngineStatus, ExternalTtsStatus, GenerateCompositionRequest, ExportProgress, VoiceProfile } from '../shared/types';
+import type { ModelDownloadMirror, ModelSetupStatus, ModelStorageInfo, OptionalModel, OptionalModelStatus } from '../shared/model-downloads';
 import type { PublishDraft } from '../shared/publishing';
 
 const api = () => window.voxweave;
@@ -48,6 +48,18 @@ const stages: Array<{ phase: CompositionProgressEvent['phase']; label: string }>
 
 type Preview = NonNullable<CompositionProgressEvent['preview']>;
 const modelSizes: Record<OptionalModel, string> = { scene: '3.4 GB', search: '640 MB', clone: '3.9 GB' };
+const mirrorOptions: Array<{ value: ModelDownloadMirror; label: string }> = [
+  { value: 'official', label: '官方源（HuggingFace / GitHub）' },
+  { value: 'hf-mirror', label: 'HF-Mirror 国内镜像（hf-mirror.com）' },
+  { value: 'modelscope', label: '魔搭社区 ModelScope（modelscope.cn，国内推荐）' }
+];
+function formatStorageSize(bytes?: number): string {
+  if (bytes === undefined) return '未知';
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
 
 export type WorkspaceDialog = 'settings' | 'library' | 'audio' | 'online';
 
@@ -98,6 +110,22 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   const [modelImportPending, setModelImportPending] = useState(false);
   const [modelImportError, setModelImportError] = useState('');
   const [modelImportNotice, setModelImportNotice] = useState('');
+  const [modelStorage, setModelStorage] = useState<ModelStorageInfo>();
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [storageNotice, setStorageNotice] = useState('');
+  const [storageError, setStorageError] = useState('');
+  const [externalTts, setExternalTts] = useState<ExternalTtsStatus>();
+  const [extEnabled, setExtEnabled] = useState(false);
+  const [extBaseUrl, setExtBaseUrl] = useState('http://127.0.0.1:8080/v1');
+  const [extModel, setExtModel] = useState('qwen3-tts');
+  const [extVoice, setExtVoice] = useState('default');
+  const [extApiKey, setExtApiKey] = useState('');
+  const [extClearKey, setExtClearKey] = useState(false);
+  const [extBusy, setExtBusy] = useState(false);
+  const [extNotice, setExtNotice] = useState('');
+  const [extError, setExtError] = useState('');
+  const [extVoices, setExtVoices] = useState<string[]>([]);
+  const [extModels, setExtModels] = useState<string[]>([]);
   const [enginePath, setEnginePath] = useState('');
   const [modelDir, setModelDir] = useState('');
   const [engineNotice, setEngineNotice] = useState('');
@@ -126,6 +154,14 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     if (!desktop) return;
     await Promise.all([
       desktop.optionalModelStatus?.().then(setOptionalModels),
+      desktop.modelStorageInfo?.().then(setModelStorage),
+      desktop.externalTtsStatus?.().then(result => {
+        setExternalTts(result);
+        setExtEnabled(result.enabled);
+        setExtBaseUrl(result.baseUrl);
+        setExtModel(result.model);
+        setExtVoice(result.voice);
+      }),
       desktop.semanticStatus?.().then(result => {
         setSemanticEnginePath(result.enginePath); setSemanticModelPath(result.modelPath); setSemanticConfigured(result.configured);
       }),
@@ -146,6 +182,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
       if (value.state === 'ready') {
         setSetupRequested(false);
         setSetupDismissed(true);
+        void desktop.modelStorageInfo?.().then(setModelStorage).catch(() => undefined);
         void desktop.getStatus().then(result => {
           if (!mounted) return;
           setStatus(result);
@@ -161,6 +198,10 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     void desktop.modelSetupStatus().then(value => { if (!receivedProgress) update(value); }).catch(() => undefined);
     return () => { mounted = false; unsubscribe(); unsubscribeOptional?.(); };
   }, []);
+  useEffect(() => {
+    if (settingsOpen) void refreshModelSettings().catch(() => undefined);
+  }, [settingsOpen]);
+
   useEffect(() => api()?.onExportProgress(event => {
     setExportProgress(event);
     if (['complete', 'error', 'cancelled'].includes(event.phase)) {
@@ -225,10 +266,15 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
 
   const estimatedSeconds = useMemo(() => estimateDuration(script), [script]);
   const working = Boolean(jobId) || exportPending || Boolean(exportJob) || bgmBusy || generatePending || captionBusy;
+  const usingExternalTts = Boolean(externalTts?.enabled);
   const modelsPending = !!modelSetup && !['ready', 'bundled'].includes(modelSetup.state);
-  const modelSetupLabel = modelSetup?.state === 'error' ? '模型准备失败' : '正在准备模型';
-  const showSetup = modelsPending && !dialog && !candidateSceneId && !cloneOpen &&
+  const modelsBlocked = modelsPending && !usingExternalTts;
+  const modelSetupLabel = modelSetup?.state === 'error' ? '模型准备失败' : modelSetup?.state === 'setup' ? '待下载基础模型' : '正在准备模型';
+  const showSetup = modelsPending && !usingExternalTts && !dialog && !candidateSceneId && !cloneOpen &&
     (setupRequested || (active && !setupDismissed && (modelSetup.state !== 'checking' || modelSetup.activity === 'importing')));
+  useEffect(() => {
+    if (showSetup && !modelStorage) void api()?.modelStorageInfo?.().then(setModelStorage).catch(() => undefined);
+  }, [showSetup, modelStorage]);
   const audioDirty = !!plan && (bgmAsset !== (plan.bgm.enabled ? plan.bgm.assetId ?? '' : '') || bgmVolume !== plan.bgm.volume || bgmDucking !== plan.bgm.ducking ||
     narrationVolume !== plan.audio.narrationVolume || originalEnabled !== plan.audio.originalEnabled ||
     originalVolume !== plan.audio.originalVolume || originalDucking !== plan.audio.originalDucking);
@@ -257,9 +303,9 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
       setProgress({ jobId: 'browser', phase: 'error', progress: 0, message: '请在帧舟桌面应用中运行。', recoverable: true });
       return;
     }
-    if (modelsPending) return;
+    if (modelsBlocked) return;
     if (plan && preview && !compositionDirty && audioDirty) { await applyAudio(); return; }
-    if (status.state === 'missing') { openDialog('settings'); return; }
+    if (!usingExternalTts && status.state === 'missing') { openDialog('settings'); return; }
     setGeneratePending(true);
     setPreviewError(undefined); setPreview(undefined); setPlan(undefined);
     setExportProgress(undefined);
@@ -429,15 +475,99 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
   }
 
   function closeSetup() { setSetupDismissed(true); setSetupRequested(false); }
-  function retryBasicModels() { setModelImportError(''); void api()?.retryModelSetup(); }
+  function startBasicModels() { setModelImportError(''); setStorageError(''); void api()?.startModelSetup(); }
+  function retryBasicModels() { setModelImportError(''); setStorageError(''); void api()?.retryModelSetup(); }
   function openOnlineLibrary() {
     closeSetup(); setCandidateSceneId(undefined); openDialog('online');
   }
+  async function changeMirror(mirror: ModelDownloadMirror) {
+    setStorageError(''); setStorageNotice('');
+    try {
+      const info = await api()?.setModelDownloadMirror(mirror);
+      if (info) {
+        setModelStorage(info);
+        const label = mirrorOptions.find(option => option.value === mirror)?.label ?? mirror;
+        setStorageNotice(modelSetup?.state === 'downloading'
+          ? `已切换下载源为：${label}，当前下载将自动切换线路续传。`
+          : `已切换下载源为：${label}`);
+      }
+    } catch (error) { setStorageError(error instanceof Error ? error.message : String(error)); }
+  }
+  async function chooseModelStorage() {
+    setStorageBusy(true); setStorageError(''); setStorageNotice('');
+    try {
+      const result = await api()?.chooseModelStorage();
+      if (!result) return;
+      setModelStorage(result.storage);
+      if (result.changed) {
+        await refreshModelSettings();
+        const latest = await api()?.getStatus();
+        if (latest) setStatus(latest);
+        const summary = result.migratedFiles > 0
+          ? `已迁移 ${result.migratedFiles} 个文件（${formatStorageSize(result.migratedBytes)}）到新目录。`
+          : '已更新模型保存位置。';
+        setStorageNotice(result.warning ? `${summary} ${result.warning}` : summary);
+      }
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally { setStorageBusy(false); }
+  }
+  async function saveExternalTts(overrideEnabled?: boolean) {
+    setExtBusy(true); setExtError(''); setExtNotice('');
+    try {
+      const saved = await api()?.configureExternalTts({
+        enabled: overrideEnabled ?? extEnabled,
+        baseUrl: extBaseUrl,
+        model: extModel,
+        voice: extVoice,
+        apiKey: extApiKey || undefined,
+        clearApiKey: extClearKey || undefined
+      });
+      if (saved) {
+        setExternalTts(saved);
+        setExtEnabled(saved.enabled);
+        setExtBaseUrl(saved.baseUrl);
+        setExtModel(saved.model);
+        setExtVoice(saved.voice);
+        setExtApiKey('');
+        setExtClearKey(false);
+        const latest = await api()?.getStatus();
+        if (latest) setStatus(latest);
+        setExtNotice(saved.enabled ? '已启用外部 TTS API，旁白将通过该接口合成。' : '已关闭外部 TTS API，恢复使用内置旁白模型。');
+      }
+    } catch (error) {
+      setExtError(error instanceof Error ? error.message : String(error));
+    } finally { setExtBusy(false); }
+  }
+  async function testExternalTts() {
+    setExtBusy(true); setExtError(''); setExtNotice('');
+    try {
+      const result = await api()?.testExternalTts({
+        enabled: true,
+        baseUrl: extBaseUrl,
+        model: extModel,
+        voice: extVoice,
+        apiKey: extApiKey || undefined,
+        clearApiKey: extClearKey || undefined
+      });
+      if (result) {
+        setExtModels(result.models);
+        setExtVoices(result.voices);
+        if (result.models.length && !result.models.includes(extModel)) setExtModel(result.models[0]);
+        if (result.voices.length && !result.voices.includes(extVoice)) setExtVoice(result.voices[0]);
+        setExtNotice(result.message);
+      }
+    } catch (error) {
+      setExtError(error instanceof Error ? error.message : String(error));
+    } finally { setExtBusy(false); }
+  }
 
   return <div className="app-shell">
-    {modelsPending && <section className="model-setup" aria-label="准备创作模型">
-      <span>{modelSetup.state === 'error' ? '配音和字幕准备失败' : '正在准备配音和字幕，你可以先写文案。'}</span>
-      <button className="text-action" onClick={() => setSetupRequested(true)}>查看进度</button>
+    {modelsBlocked && <section className="model-setup" aria-label="准备创作模型">
+      <span>{modelSetup.state === 'error' ? '配音和字幕准备失败'
+        : modelSetup.state === 'setup' ? '尚未下载基础模型，请先选择保存位置与国内下载源，或在创作设置接入外部本地 TTS。'
+        : '正在准备配音和字幕，你可以先写文案。'}</span>
+      <button className="text-action" onClick={() => setSetupRequested(true)}>{modelSetup.state === 'setup' ? '设置并下载' : '查看进度'}</button>
     </section>}
 
     <main className={`creator-layout ${plan ? 'has-storyboard' : ''}`}>
@@ -465,10 +595,18 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
 
         <button className="more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><Settings2 size={15}/> 更多设置{plan && preview ? ' · 音轨' : ''} <ChevronDown size={15}/></button>
         {moreOpen && <div className="settings-grid">
-          <label><span>音色</span><select disabled={working} value={voiceId} onChange={event => setVoiceId(event.target.value)}>
-            <optgroup label="内置音色">{voices.map(voice => <option key={voice.id} value={voice.id}>{voice.name} · {voice.note}</option>)}</optgroup>
-            {!!clonedVoices.length && <optgroup label="我的克隆音色">{clonedVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</optgroup>}
-          </select><button type="button" className="text-action" disabled={modelsPending} onClick={() => setCloneOpen(true)}>克隆新音色</button></label>
+          <label><span>音色</span>{usingExternalTts ? (
+            <div className="external-voice-note">
+              <span>外部 TTS：{externalTts?.model} · {externalTts?.voice}</span>
+              <button type="button" className="text-action" onClick={() => openDialog('settings')}>去修改</button>
+            </div>
+          ) : <>
+            <select disabled={working} value={voiceId} onChange={event => setVoiceId(event.target.value)}>
+              <optgroup label="内置音色">{voices.map(voice => <option key={voice.id} value={voice.id}>{voice.name} · {voice.note}</option>)}</optgroup>
+              {!!clonedVoices.length && <optgroup label="我的克隆音色">{clonedVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</optgroup>}
+            </select>
+            <button type="button" className="text-action" disabled={modelsPending} onClick={() => setCloneOpen(true)}>克隆新音色</button>
+          </>}</label>
           <label><span>画幅</span><select disabled={working} value={aspectRatio} onChange={event => setAspectRatio(event.target.value as typeof aspectRatio)}><option>9:16</option><option>16:9</option><option>1:1</option></select></label>
           <label><span>字幕风格</span><select disabled={working} value={captionStyle} onChange={event => setCaptionStyle(event.target.value as typeof captionStyle)}><option value="commerce-bold">电商强调</option><option value="opinion-clean">观点口播</option><option value="brand-minimal">品牌极简</option><option value="info-card">信息卡片</option></select></label>
           <label><span>字幕高亮</span><select aria-label="字幕高亮粒度" disabled={working} value={captionHighlight} onChange={event => setCaptionHighlight(event.target.value as typeof captionHighlight)}><option value="none">无动态高亮</option><option value="word">按词高亮</option><option value="phrase">按短语高亮</option></select></label>
@@ -488,7 +626,7 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
 
         <div className="primary-row">
           {jobId && <button className="cancel-button" onClick={() => api()?.cancelComposition(jobId)}><Square size={14} fill="currentColor"/> 取消生成</button>}
-          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || modelsPending || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{modelsPending ? modelSetupLabel : jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
+          <button className={`generate-button ${needsGeneration ? 'needs-generation' : 'up-to-date'}`} disabled={working || modelsBlocked || !script.trim()} onClick={() => void generate()}><WandSparkles size={18}/>{modelsBlocked ? modelSetupLabel : jobId || generatePending ? '正在自动成片…' : exportJob || exportPending ? '正在导出…' : bgmBusy ? '正在应用音轨…' : progress?.phase === 'error' || progress?.phase === 'cancelled' ? '重新生成' : '生成视频'}</button>
         </div>
       </section>
 
@@ -586,15 +724,37 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
         useBgm={active && plan && preview && !working ? asset => { setBgmAsset(asset.id); openDialog(); } : undefined}/>
     </Modal>}
 
-    {showSetup && <Modal title="准备配音和字幕" subtitle="基础模型约占 4.8 GB，下载可断点续传。" close={closeSetup} className="creation-settings" workspace>
+    {showSetup && <Modal title="准备配音和字幕" subtitle="基础模型约占 4.8 GB，支持自定义存储盘符、国内镜像与断点续传。" close={closeSetup} className="creation-settings" workspace>
       <div className="settings-form">
         <ModelProgress status={modelSetup}/>
+        {modelStorage && <div className="storage-card">
+          <div className="storage-row">
+            <div>
+              <b>模型保存位置</b>
+              <small title={modelStorage.root}>{modelStorage.root}</small>
+              <small>已占用 {formatStorageSize(modelStorage.usedBytes)}{modelStorage.freeBytes !== undefined ? ` · 当前盘可用 ${formatStorageSize(modelStorage.freeBytes)}` : ''}</small>
+            </div>
+            {modelStorage.canChange && <button className="secondary-button" disabled={storageBusy || working} onClick={() => void chooseModelStorage()}>
+              <FolderOpen size={15}/> {storageBusy ? '正在迁移…' : modelStorage.usedBytes > 0 ? '一键迁移' : '更改位置'}
+            </button>}
+          </div>
+          <label className="mirror-field">
+            <span>下载源（网络慢可切换国内镜像）</span>
+            <select value={modelStorage.mirror} disabled={storageBusy} onChange={event => void changeMirror(event.target.value as ModelDownloadMirror)}>
+              {mirrorOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        </div>}
+        {storageNotice && <p role="status">{storageNotice}</p>}
+        {storageError && <p className="field-error" role="alert">{storageError}</p>}
         {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
         <div className="model-actions">
-          {modelSetup.state === 'error' && <button className="modal-primary" disabled={modelImportPending} onClick={retryBasicModels}><RefreshCw size={15}/> 重试下载</button>}
-          <button className={modelSetup.state === 'error' ? 'secondary-button' : 'modal-primary'} onClick={closeSetup}>{modelSetup.state === 'error' ? '返回创作' : '后台继续'}</button>
-          <button className="secondary-button" disabled={modelImportPending} onClick={() => void importLocalModels()}><FolderOpen size={15}/> 导入已有模型</button>
+          {modelSetup.state === 'setup' && <button className="modal-primary" disabled={modelImportPending || storageBusy} onClick={startBasicModels}><Download size={15}/> 开始下载</button>}
+          {modelSetup.state === 'error' && <button className="modal-primary" disabled={modelImportPending || storageBusy} onClick={retryBasicModels}><RefreshCw size={15}/> 重试下载</button>}
+          <button className={modelSetup.state === 'setup' || modelSetup.state === 'error' ? 'secondary-button' : 'modal-primary'} onClick={closeSetup}>{modelSetup.state === 'setup' ? '稍后再说' : modelSetup.state === 'error' ? '返回创作' : '后台继续'}</button>
+          <button className="secondary-button" disabled={modelImportPending || storageBusy} onClick={() => void importLocalModels()}><FolderOpen size={15}/> 导入已有模型</button>
         </div>
+        <p>老旧设备或显存有限？可在 <button className="text-action" onClick={() => { closeSetup(); openDialog('settings'); }}>创作设置</button> 接入 AudioCpp-Desktop / qwentts.cpp 等本地 TTS API，无需下载 4.5 GB 旁白模型。</p>
         <p>缺画面时，可在素材库用 <button className="text-action" onClick={openOnlineLibrary}>在线素材</button> 补充。</p>
       </div>
     </Modal>}
@@ -602,10 +762,74 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
     {settingsOpen && <Modal title="创作设置" subtitle="配音、字幕和智能选段都在本机处理。" close={() => openDialog()} className="creation-settings" workspace>
       <div className="settings-form">
         <Feature title="自动配音和字幕" description="把文案读成旁白，让字幕跟着声音走。"
-          status={modelsPending ? modelSetupLabel : status.state === 'idle' ? '已就绪' : '待配置'} ready={!modelsPending && status.state === 'idle'}>
-          {modelsPending && <div className="model-actions">
-            <button className="secondary-button" onClick={() => { openDialog(); setSetupRequested(true); }}>查看进度</button>
+          status={usingExternalTts ? '使用外部 TTS API' : modelsPending ? modelSetupLabel : status.state === 'idle' ? '已就绪' : '待配置'} ready={usingExternalTts || (!modelsPending && status.state === 'idle')}>
+          {modelsPending && !usingExternalTts && <div className="model-actions">
+            <button className="secondary-button" onClick={() => { openDialog(); setSetupRequested(true); }}>{modelSetup.state === 'setup' ? '选择位置并下载' : '查看进度'}</button>
           </div>}
+        </Feature>
+        {modelStorage && <Feature title="模型存储与国内下载源" description="可自定义非系统盘保存位置、一键迁移已有模型，并切换 HF-Mirror 或魔搭社区加速下载。"
+          status={modelStorage.mirror === 'modelscope' ? '魔搭镜像' : modelStorage.mirror === 'hf-mirror' ? 'HF-Mirror' : '官方源'} ready>
+          <div className="storage-card">
+            <div className="storage-row">
+              <div>
+                <b>当前模型目录</b>
+                <small title={modelStorage.root}>{modelStorage.root}</small>
+                <small>已占用 {formatStorageSize(modelStorage.usedBytes)}{modelStorage.freeBytes !== undefined ? ` · 当前盘可用 ${formatStorageSize(modelStorage.freeBytes)}` : ''}</small>
+              </div>
+            </div>
+            <label className="mirror-field">
+              <span>下载源选择</span>
+              <select value={modelStorage.mirror} disabled={storageBusy} onChange={event => void changeMirror(event.target.value as ModelDownloadMirror)}>
+                {mirrorOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <div className="model-actions">
+              {modelStorage.canChange && <button className="secondary-button" disabled={storageBusy || working} onClick={() => void chooseModelStorage()}>
+                <FolderOpen size={15}/> {storageBusy ? '正在迁移模型…' : modelStorage.usedBytes > 0 ? '更改位置 / 一键迁移' : '自定义下载位置'}
+              </button>}
+              <button className="secondary-button" disabled={storageBusy} onClick={() => void api()?.openModelStorage()}>打开模型目录</button>
+              {modelSetup && modelSetup.state !== 'bundled' && <button className="text-action" disabled={modelImportPending || storageBusy} onClick={() => void importLocalModels()}>导入已有模型</button>}
+            </div>
+            {storageNotice && <p role="status">{storageNotice}</p>}
+            {storageError && <p className="field-error" role="alert">{storageError}</p>}
+            {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
+            {modelImportNotice && <p role="status">{modelImportNotice}</p>}
+          </div>
+        </Feature>}
+        <Feature title="本地 / 外部 TTS API（轻量设备推荐）" description="兼容 AudioCpp-Desktop、qwentts.cpp（tts-server）等 OpenAI /v1/audio/speech 接口。CPU 或 2–4 GB 显存设备可流畅运行，启用后无需下载 4.5 GB 内置旁白模型。"
+          status={usingExternalTts ? '已启用' : '可选'} ready={usingExternalTts}>
+          <div className="external-tts-form">
+            <label className="inline-toggle">
+              <input type="checkbox" checked={extEnabled} disabled={extBusy} onChange={event => {
+                const checked = event.target.checked;
+                setExtEnabled(checked);
+                if (!checked && usingExternalTts) void saveExternalTts(false);
+              }}/>
+              <span>启用外部 OpenAI 兼容 TTS API 替代内置配音</span>
+            </label>
+            {(extEnabled || usingExternalTts) && <>
+              <div className="external-tts-grid">
+                <label><span>API 地址</span><input value={extBaseUrl} disabled={extBusy} onChange={event => setExtBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8080/v1"/></label>
+                <label><span>模型 ID</span><input list="ext-tts-models" value={extModel} disabled={extBusy} onChange={event => setExtModel(event.target.value)} placeholder="qwen3-tts"/>
+                  <datalist id="ext-tts-models">{extModels.map(item => <option key={item} value={item}/>)}</datalist>
+                </label>
+                <label><span>音色名称</span><input list="ext-tts-voices" value={extVoice} disabled={extBusy} onChange={event => setExtVoice(event.target.value)} placeholder="default"/>
+                  <datalist id="ext-tts-voices">{extVoices.map(item => <option key={item} value={item}/>)}</datalist>
+                </label>
+                <label><span>API Key（本地服务留空）</span><input type="password" value={extApiKey} disabled={extBusy} onChange={event => { setExtApiKey(event.target.value); setExtClearKey(false); }} placeholder={externalTts?.hasApiKey ? '已保存，留空保持不变' : '可选'}/></label>
+              </div>
+              {externalTts?.hasApiKey && <label className="inline-toggle">
+                <input type="checkbox" checked={extClearKey} disabled={extBusy} onChange={event => setExtClearKey(event.target.checked)}/>
+                <span>清除已保存的 API Key</span>
+              </label>}
+              <div className="model-actions">
+                <button className="secondary-button" disabled={extBusy || !extBaseUrl.trim()} onClick={() => void testExternalTts()}>测试连接并获取音色</button>
+                <button className="modal-primary" disabled={extBusy} onClick={() => void saveExternalTts()}>保存 TTS 配置</button>
+              </div>
+            </>}
+            {extNotice && <p role="status">{extNotice}</p>}
+            {extError && <p className="field-error" role="alert">{extError}</p>}
+          </div>
         </Feature>
         <Feature title="智能分镜和原片选段" description="根据文案规划画面，有原片时自动找合适的片段。"
           status={sourceAnalysisReady ? '已启用' : sceneConfigured ? '仅文案分镜' : optionalModels?.scene.installed ? '已关闭' : '可选'} ready={sourceAnalysisReady}>
@@ -623,11 +847,6 @@ export function App({ active, dialog, openDialog, assets, refreshAssets }: {
           status="支持无 Key 搜索" ready>
           <OnlineSourceSettings/>
         </Feature>
-        {modelSetup && modelSetup.state !== 'bundled' && <div>
-          <button className="text-action" disabled={modelImportPending} onClick={() => void importLocalModels()}>导入已有模型</button>
-          {modelImportError && <p className="field-error" role="alert">{modelImportError}</p>}
-          {modelImportNotice && <p role="status">{modelImportNotice}</p>}
-        </div>}
         <details className="advanced-settings">
           <summary>高级设置 · 手动指定模型</summary>
           <div className="settings-form">

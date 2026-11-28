@@ -24,11 +24,23 @@ export async function createModelDownloads(root) {
   }
   const sense = JSON.parse(await readFile(path.join(root, 'models/sensevoice-small/manifest.json'), 'utf8'));
   const sensePath = 'models/sensevoice-small';
-  catalog.archives.push({ path: 'sensevoice.tar.bz2', url: sense.source, files: [
-    { ...sense.files.model, path: `${sensePath}/${sense.files.model.path}`, member: `${sense.version}/model.int8.onnx` },
-    { ...sense.files.tokens, path: `${sensePath}/${sense.files.tokens.path}`, member: `${sense.version}/tokens.txt` },
-    { ...sense.notices.modelPackage, path: `${sensePath}/SENSEVOICE-LICENSE`, member: `${sense.version}/LICENSE` }
-  ] });
+  // Download SenseVoice files directly from HuggingFace (with ModelScope mirror) instead of a
+  // .tar.bz2 archive, so older Windows 10 tar.exe builds without bzip2 support never fail.
+  const senseHfBase = 'https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07';
+  const senseMsBase = 'https://www.modelscope.cn/models/mariolux/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/master';
+  for (const [descriptor, remoteName, size] of [
+    [sense.files.model, 'model.int8.onnx', 239233841],
+    [sense.files.tokens, 'tokens.txt', 315894],
+    [sense.notices.modelPackage, 'LICENSE', 71]
+  ]) {
+    catalog.files.push({
+      path: `${sensePath}/${descriptor.path}`,
+      size,
+      sha256: descriptor.sha256,
+      url: `${senseHfBase}/${remoteName}`,
+      mirrors: { modelscope: `${senseMsBase}/${remoteName}` }
+    });
+  }
   for (const [descriptor, url] of [
     [sense.files.sileroVad, 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx'],
     [sense.notices.modelTerms, `https://raw.githubusercontent.com/modelscope/FunASR/${sense.notices.modelTerms.revision}/MODEL_LICENSE`],

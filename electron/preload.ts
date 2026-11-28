@@ -28,8 +28,13 @@ const api: VoxWeaveApi = {
     }
   },
   modelSetupStatus: () => ipcRenderer.invoke('models:status'),
+  startModelSetup: () => ipcRenderer.invoke('models:start'),
   retryModelSetup: () => ipcRenderer.invoke('models:retry'),
   importLocalModels: () => ipcRenderer.invoke('models:import'),
+  modelStorageInfo: () => ipcRenderer.invoke('models:storage-info'),
+  setModelDownloadMirror: mirror => ipcRenderer.invoke('models:set-mirror', mirror),
+  chooseModelStorage: () => ipcRenderer.invoke('models:choose-storage'),
+  openModelStorage: () => ipcRenderer.invoke('models:open-storage'),
   onModelSetupProgress: listener => {
     const handler = (_event: Electron.IpcRendererEvent, status: import('../shared/model-downloads.js').ModelSetupStatus) => listener(status);
     ipcRenderer.on('models:progress', handler);
@@ -42,6 +47,9 @@ const api: VoxWeaveApi = {
     ipcRenderer.on('models:optional-progress', handler);
     return () => ipcRenderer.removeListener('models:optional-progress', handler);
   },
+  externalTtsStatus: () => ipcRenderer.invoke('tts:external-status'),
+  configureExternalTts: config => ipcRenderer.invoke('tts:external-configure', config),
+  testExternalTts: config => ipcRenderer.invoke('tts:external-test', config),
   getStatus: () => ipcRenderer.invoke('engine:status'),
   configure: config => ipcRenderer.invoke('engine:configure', config),
   semanticStatus: () => ipcRenderer.invoke('semantic:status'),

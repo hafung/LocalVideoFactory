@@ -5,7 +5,13 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { downloadFile, ModelDownloader } from './model-downloads.js';
+import {
+  downloadFile,
+  getDirectoryUsage,
+  migrateModelDirectory,
+  ModelDownloader,
+  resolveDownloadUrls
+} from './model-downloads.js';
 import { ModelDownloadsSchema, type ModelDownloads } from '../shared/model-downloads.js';
 
 const directories: string[] = [];
@@ -262,5 +268,92 @@ describe('first launch model preparation', () => {
     const catalog = { schemaVersion: 1, files: [{ ...descriptor, path: '../escape', url: 'https://example.org/model' }], archives: [], manifests: [] };
     expect(() => ModelDownloadsSchema.parse(catalog)).toThrow();
     expect(() => ModelDownloadsSchema.parse({ ...catalog, files: [{ ...descriptor, url: 'http://example.org/model' }] })).toThrow();
+  });
+});
+
+describe('china mirrors, setup inspection, and storage migration', () => {
+  it('rewrites HuggingFace URLs for HF-Mirror and ModelScope with fallback chain', () => {
+    const hfUrl = 'https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051/config.json?download=true';
+    expect(resolveDownloadUrls(hfUrl, 'official')).toEqual([hfUrl]);
+    expect(resolveDownloadUrls(hfUrl, 'hf-mirror')).toEqual([
+      'https://hf-mirror.com/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051/config.json?download=true',
+      hfUrl
+    ]);
+    expect(resolveDownloadUrls(hfUrl, 'modelscope')).toEqual([
+      'https://www.modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/master/config.json',
+      'https://hf-mirror.com/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/resolve/0c0e3051/config.json?download=true',
+      hfUrl
+    ]);
+    expect(resolveDownloadUrls(hfUrl, 'modelscope', {
+      modelscope: 'https://www.modelscope.cn/models/custom/repo/resolve/master/config.json'
+    })[0]).toBe('https://www.modelscope.cn/models/custom/repo/resolve/master/config.json');
+  });
+
+  it('falls back to the next mirror when the preferred mirror returns 404 or bad SHA-256', async () => {
+    const root = await temporary();
+    const target = path.join(root, 'config.json');
+    const seen: string[] = [];
+    const fetcher = request(url => {
+      seen.push(url);
+      if (url.includes('modelscope.cn')) return new Response('not found', { status: 404 });
+      if (url.includes('hf-mirror.com')) return new Response('x'.repeat(content.length));
+      return new Response(content);
+    });
+    const urls = resolveDownloadUrls('https://huggingface.co/Qwen/Test/resolve/main/config.json', 'modelscope');
+    await downloadFile(urls, target, new AbortController().signal, () => {}, descriptor, fetcher);
+    expect(seen).toEqual(urls);
+    expect(await readFile(target, 'utf8')).toBe(content);
+  });
+
+  it('inspects without creating files or fetching, reporting setup when missing and ready when present', async () => {
+    const root = await temporary();
+    const cache = path.join(root, 'storage');
+    const catalogPath = await writeResource(root, 'catalog.json', JSON.stringify({
+      schemaVersion: 1,
+      files: [{ ...descriptor, url: 'https://huggingface.co/Qwen/Test/resolve/main/test.bin' }],
+      archives: [],
+      manifests: [{ path: 'models/manifest.json', data: { ok: true } }]
+    }));
+    const network = vi.fn(() => { throw new Error('inspect must not fetch'); });
+    const downloader = new ModelDownloader(catalogPath, cache, () => {}, network);
+    expect(await downloader.inspect()).toBe(false);
+    expect(downloader.status.state).toBe('setup');
+    expect(await stat(cache).catch(() => undefined)).toBeUndefined();
+    expect(network).not.toHaveBeenCalled();
+
+    await writeResource(cache, descriptor.path, content);
+    expect(await downloader.inspect()).toBe(true);
+    expect(downloader.status.state).toBe('ready');
+    expect(JSON.parse(await readFile(path.join(cache, 'models/manifest.json'), 'utf8'))).toEqual({ ok: true });
+  });
+
+  it('migrates managed model files safely, preserves unrelated files, and rejects nested targets', async () => {
+    const root = await temporary();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await writeResource(source, 'models/qwen3-tts-1.7b-customvoice/config.json', content);
+    await writeResource(source, 'semantic/model/embed.gguf', 'embedding-data');
+    await writeResource(source, '.verified.json', '{"ok":true}');
+    await writeResource(source, 'unrelated-user-note.txt', 'keep me');
+
+    expect(await getDirectoryUsage(source)).toBe(
+      Buffer.byteLength(content) + Buffer.byteLength('embedding-data') + Buffer.byteLength('{"ok":true}')
+    );
+    await expect(migrateModelDirectory(source, source)).rejects.toThrow('不能与当前模型目录相同或互相包含');
+    await expect(migrateModelDirectory(source, path.join(source, 'sub'))).rejects.toThrow('不能与当前模型目录相同或互相包含');
+
+    const progressEvents: number[] = [];
+    const migration = await migrateModelDirectory(source, target, info => progressEvents.push(info.completedFiles));
+    expect(migration.migratedFiles).toBe(3);
+    expect(progressEvents.at(-1)).toBe(3);
+    expect(await readFile(path.join(target, 'models/qwen3-tts-1.7b-customvoice/config.json'), 'utf8')).toBe(content);
+    expect(await readFile(path.join(target, 'semantic/model/embed.gguf'), 'utf8')).toBe('embedding-data');
+    expect(await readFile(path.join(target, '.verified.json'), 'utf8')).toBe('{"ok":true}');
+    expect(await stat(path.join(target, 'unrelated-user-note.txt')).catch(() => undefined)).toBeUndefined();
+
+    const failedCleanup = await migration.cleanupOld();
+    expect(failedCleanup).toEqual([]);
+    expect(await stat(path.join(source, 'models')).catch(() => undefined)).toBeUndefined();
+    expect(await readFile(path.join(source, 'unrelated-user-note.txt'), 'utf8')).toBe('keep me');
   });
 });

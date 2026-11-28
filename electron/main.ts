@@ -14,6 +14,7 @@ import { planDraft } from './composition/planner.js';
 import { EditPlanStore } from './composition/project-store.js';
 import { NarrationService } from './composition/narration.js';
 import { QwenNarrationSynthesizer } from './composition/qwen-narration.js';
+import { ExternalTtsNarrationSynthesizer, normalizeExternalTtsBaseUrl, testExternalTtsConnection } from './composition/external-tts.js';
 import { resolveEditPlan } from './composition/resolver.js';
 import { LocalLlamaScenePlanner, type SceneSearchIntent } from './composition/scene-planner.js';
 import { FallbackMediaProbe, FfprobeMediaProbe } from './media/probe.js';
@@ -28,8 +29,17 @@ import { selectBroll, splitUnfilledScenes, fillShortLocalVideos } from './librar
 import { fillOnlineMedia } from './library/automatic-media.js';
 import { alignNarration, senseVoiceNarrationTranscriber } from './alignment/narration.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL, TTS_SETUP_VERSION, describeTtsModel, narrationModelPath, resetTtsDevelopmentData } from './tts-model.js';
-import { ModelDownloader, type LocalModelSources } from './model-downloads.js';
-import { modelGroup, ModelDownloadsSchema, OPTIONAL_MODELS, type OptionalModel, type OptionalModelStatus } from '../shared/model-downloads.js';
+import { getDirectoryUsage, getFreeSpace, migrateModelDirectory, ModelDownloader, type LocalModelSources } from './model-downloads.js';
+import {
+  MODEL_DOWNLOAD_MIRRORS,
+  modelGroup,
+  ModelDownloadsSchema,
+  OPTIONAL_MODELS,
+  type ModelDownloadMirror,
+  type ModelStorageInfo,
+  type OptionalModel,
+  type OptionalModelStatus
+} from '../shared/model-downloads.js';
 import { DraftPlanRequestSchema, EditPlanSchema, type EditPlan } from '../shared/edit-plan.js';
 import { CaptionHighlightSchema } from '../shared/edit-plan.js';
 import { updateCaptionHighlight } from './composition/caption-editing.js';
@@ -64,6 +74,17 @@ interface Settings extends EngineConfig {
   pexelsKeyEncrypted?: string; pixabayKeyEncrypted?: string; coverrKeyEncrypted?: string; coverrTier?: CoverrTier;
   semanticEnginePath?: string; semanticModelPath?: string; semanticEnabled?: boolean;
   modelResourcesDir?: string;
+  modelStorageDir?: string;
+  modelDownloadMirror?: ModelDownloadMirror;
+  modelSetupConfirmed?: boolean;
+  externalTts?: {
+    enabled: boolean;
+    baseUrl: string;
+    model: string;
+    voice: string;
+    speed?: number;
+  };
+  externalTtsKeyEncrypted?: string;
   sceneModelPath?: string; sceneModelEnabled?: boolean;
   recentVisualAssetIds?: string[];
   ttsSetupVersion?: string;
@@ -89,6 +110,51 @@ function broadcast(channel: string, ...args: unknown[]): void {
   }
 }
 
+function defaultModelStorageDir(): string {
+  return path.join(app.getPath('userData'), 'model-resources');
+}
+
+function configuredModelStorageDir(): string {
+  const custom = settings.get('modelStorageDir')?.trim();
+  return custom ? path.resolve(custom) : defaultModelStorageDir();
+}
+
+function configuredMirror(): ModelDownloadMirror {
+  const value = settings.get('modelDownloadMirror');
+  return value && (MODEL_DOWNLOAD_MIRRORS as readonly string[]).includes(value) ? value : 'official';
+}
+
+function externalTtsApiKey(): string | undefined {
+  const encrypted = settings.get('externalTtsKeyEncrypted');
+  if (!encrypted) return undefined;
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    }
+  } catch { /* unreadable encrypted secret */ }
+  return undefined;
+}
+
+function configuredExternalTts() {
+  const stored = settings.get('externalTts');
+  return {
+    enabled: Boolean(stored?.enabled && stored?.baseUrl?.trim()),
+    baseUrl: stored?.baseUrl ?? 'http://127.0.0.1:8080/v1',
+    model: stored?.model ?? 'qwen3-tts',
+    voice: stored?.voice ?? 'default',
+    speed: stored?.speed,
+    hasApiKey: Boolean(settings.get('externalTtsKeyEncrypted'))
+  };
+}
+
+function createBasicModelDownloader(catalog: string): ModelDownloader {
+  let lastMessage = '';
+  return new ModelDownloader(catalog, configuredModelStorageDir(), status => {
+    if (cliMode && status.message !== lastMessage) { console.error(status.message); lastMessage = status.message; }
+    broadcast('models:progress', status);
+  }, modelRequest, localModelSources, 'basic', configuredMirror);
+}
+
 function initializeModelDownloader(): void {
   const catalog = path.join(resourceRoot(), 'model-downloads.json');
   if (!app.isPackaged || !existsSync(catalog)) return;
@@ -99,15 +165,24 @@ function initializeModelDownloader(): void {
       if (files.some(file => modelGroup(file.path) === group)) downloadableModels.add(group);
     }
   } catch { /* The basic model download reports a malformed catalog. */ }
-  let lastMessage = '';
-  modelDownloader = new ModelDownloader(catalog, path.join(app.getPath('userData'), 'model-resources'), status => {
-    if (cliMode && status.message !== lastMessage) { console.error(status.message); lastMessage = status.message; }
-    broadcast('models:progress', status);
-  }, modelRequest, localModelSources, 'basic');
+  modelDownloader = createBasicModelDownloader(catalog);
   app.on('before-quit', () => {
     modelDownloader?.cancel();
     for (const downloader of optionalDownloads.values()) downloader.cancel();
   });
+}
+
+async function readModelStorageInfo(): Promise<ModelStorageInfo> {
+  const root = modelRoot();
+  const [usedBytes, freeBytes] = await Promise.all([getDirectoryUsage(root), getFreeSpace(root)]);
+  return {
+    root,
+    defaultRoot: defaultModelStorageDir(),
+    mirror: configuredMirror(),
+    usedBytes,
+    freeBytes,
+    canChange: Boolean(modelDownloader)
+  };
 }
 
 function modelRoot(): string { return modelDownloader?.root ?? resourceRoot(); }
@@ -222,7 +297,7 @@ async function prepareOptionalModel(group: OptionalModel): Promise<void> {
         lastMessage = status.message;
       }
       else broadcast('models:optional-progress', group, status);
-    }, modelRequest, localModelSources, group);
+    }, modelRequest, localModelSources, group, configuredMirror);
     optionalDownloads.set(group, downloader);
     await downloader.start();
     if (downloader.status.state !== 'ready') throw new Error(downloader.status.message);
@@ -609,7 +684,89 @@ if (cliMode) {
   });
 
   ipcMain.handle('models:status', () => modelDownloader?.status ?? bundledModelStatus);
-  ipcMain.handle('models:retry', () => { if (modelDownloader) void modelDownloader.start(); });
+  ipcMain.handle('models:start', () => {
+    settings.set('modelSetupConfirmed', true);
+    if (modelDownloader) void modelDownloader.start();
+  });
+  ipcMain.handle('models:retry', () => {
+    settings.set('modelSetupConfirmed', true);
+    if (modelDownloader) void modelDownloader.start();
+  });
+  ipcMain.handle('models:storage-info', () => readModelStorageInfo());
+  ipcMain.handle('models:set-mirror', async (_event, value: unknown) => {
+    const mirror = z.enum(MODEL_DOWNLOAD_MIRRORS).parse(value);
+    settings.set('modelDownloadMirror', mirror);
+    if (modelDownloader && (modelDownloader.active || modelDownloader.status.state === 'error')) {
+      void modelDownloader.restart();
+    }
+    for (const downloader of optionalDownloads.values()) {
+      if (downloader.active) void downloader.restart();
+    }
+    return readModelStorageInfo();
+  });
+  ipcMain.handle('models:open-storage', async () => {
+    const root = modelRoot();
+    await mkdir(root, { recursive: true });
+    await shell.openPath(root);
+  });
+  ipcMain.handle('models:choose-storage', async event => {
+    if (!modelDownloader || !modelCatalog) {
+      return { changed: false, migratedFiles: 0, migratedBytes: 0, storage: await readModelStorageInfo() };
+    }
+    if (compositionJobs.size || exportJobs.size || projectLocks.size) {
+      throw new Error('请等待当前生成或导出任务完成后再更改模型存储位置。');
+    }
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+      title: '选择模型保存文件夹（建议选择空间充裕的非系统盘目录）',
+      defaultPath: configuredModelStorageDir()
+    };
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    const selected = result.filePaths[0];
+    if (result.canceled || !selected) {
+      return { changed: false, migratedFiles: 0, migratedBytes: 0, storage: await readModelStorageInfo() };
+    }
+    const target = path.resolve(selected);
+    const oldRoot = modelDownloader.root;
+    if (path.resolve(oldRoot) === target) {
+      return { changed: false, migratedFiles: 0, migratedBytes: 0, storage: await readModelStorageInfo() };
+    }
+    const wasActive = modelDownloader.active;
+    await modelDownloader.stop();
+    await Promise.all([...optionalDownloads.values()].map(downloader => downloader.stop()));
+    semanticEmbedder.dispose();
+    semanticReranker.clear();
+
+    let migration: Awaited<ReturnType<typeof migrateModelDirectory>>;
+    try {
+      migration = await migrateModelDirectory(oldRoot, target);
+    } catch (error) {
+      if (wasActive) void modelDownloader.start();
+      else await modelDownloader.inspect();
+      throw error;
+    }
+    settings.set('modelStorageDir', target);
+    optionalDownloads.clear();
+    modelDownloader = createBasicModelDownloader(modelCatalog);
+
+    const failedCleanup = await migration.cleanupOld();
+    const warning = failedCleanup.length
+      ? '模型已迁移到新位置，原目录中个别被系统占用的残留文件可在重启应用后手动删除。'
+      : undefined;
+
+    const ready = await modelDownloader.inspect();
+    if (!ready && (wasActive || settings.get('modelSetupConfirmed'))) {
+      void modelDownloader.start();
+    }
+    return {
+      changed: true,
+      migratedFiles: migration.migratedFiles,
+      migratedBytes: migration.migratedBytes,
+      warning,
+      storage: await readModelStorageInfo()
+    };
+  });
   ipcMain.handle('models:optional-status', () => optionalModelStatus());
   ipcMain.handle('models:prepare-optional', (_event, value: unknown) => prepareOptionalModel(z.enum(OPTIONAL_MODELS).parse(value)));
   ipcMain.handle('models:import', async event => {
@@ -630,12 +787,65 @@ if (cliMode) {
     const source = candidates[directories.indexOf(true)];
     if (!source) throw new Error('请选择以前下载模型时使用的 resources 文件夹。');
     settings.set('modelResourcesDir', source);
+    settings.set('modelSetupConfirmed', true);
     if (downloader.status.state !== 'ready') void downloader.restart();
     return true;
   });
-  ipcMain.handle('engine:status', () => modelDownloader && modelDownloader.status.state !== 'ready'
-    ? { state: 'missing', backend: 'native', message: modelDownloader.status.message }
-    : configuredEngine().status());
+  const ExternalTtsSchema = z.object({
+    enabled: z.boolean(),
+    baseUrl: z.string().max(500),
+    model: z.string().trim().max(200),
+    voice: z.string().trim().max(200),
+    apiKey: z.string().max(500).optional(),
+    clearApiKey: z.boolean().optional(),
+    speed: z.number().min(0.5).max(2).optional()
+  }).strict();
+  ipcMain.handle('tts:external-status', () => configuredExternalTts());
+  ipcMain.handle('tts:external-configure', (_event, value: unknown) => {
+    const input = ExternalTtsSchema.parse(value);
+    const normalizedUrl = input.enabled || input.baseUrl.trim() ? normalizeExternalTtsBaseUrl(input.baseUrl) : '';
+    settings.set('externalTts', {
+      enabled: input.enabled,
+      baseUrl: normalizedUrl || 'http://127.0.0.1:8080/v1',
+      model: input.model || 'qwen3-tts',
+      voice: input.voice || 'default',
+      speed: input.speed
+    });
+    if (input.clearApiKey) {
+      settings.delete('externalTtsKeyEncrypted');
+    } else if (input.apiKey !== undefined && input.apiKey.trim()) {
+      if (!safeStorage.isEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')) {
+        throw new Error('无法更新本机加密存储');
+      }
+      settings.set('externalTtsKeyEncrypted', safeStorage.encryptString(input.apiKey.trim()).toString('base64'));
+    }
+    return configuredExternalTts();
+  });
+  ipcMain.handle('tts:external-test', async (_event, value: unknown) => {
+    const input = ExternalTtsSchema.parse(value);
+    const apiKey = input.clearApiKey ? undefined : (input.apiKey?.trim() || externalTtsApiKey());
+    return testExternalTtsConnection({
+      baseUrl: input.baseUrl,
+      apiKey,
+      model: input.model || 'qwen3-tts',
+      voice: input.voice || 'default',
+      speed: input.speed,
+      request: modelRequest
+    });
+  });
+  ipcMain.handle('engine:status', () => {
+    const external = configuredExternalTts();
+    if (external.enabled) {
+      return {
+        state: 'idle' as const,
+        backend: 'external' as const,
+        message: `外部 TTS API 已启用（${external.model} · ${external.voice}）`
+      };
+    }
+    return modelDownloader && modelDownloader.status.state !== 'ready'
+      ? { state: 'missing', backend: 'native', message: modelDownloader.status.message }
+      : configuredEngine().status();
+  });
   ipcMain.handle('voice:list', () => settings.get('voiceProfiles') ?? []);
   ipcMain.handle('voice:clone', async (_event, value: unknown) => {
     requireModelsReady();
@@ -714,9 +924,10 @@ if (cliMode) {
     const plan = planDraft(request); await editPlans.save(plan); settings.set('lastProjectId', plan.id); return plan;
   });
   ipcMain.handle('composition:generate', (event, input: unknown) => {
-    requireModelsReady();
+    const externalTts = configuredExternalTts();
+    if (!externalTts.enabled) requireModelsReady();
     const request = GenerateCompositionRequestSchema.parse(input) as GenerateCompositionRequest;
-    const voiceProfile = (settings.get('voiceProfiles') ?? []).find(profile => profile.id === request.voiceId);
+    const voiceProfile = externalTts.enabled ? undefined : (settings.get('voiceProfiles') ?? []).find(profile => profile.id === request.voiceId);
     if (voiceProfile && (!voiceProfile.path || !existsSync(voiceProfile.path))) throw new Error('克隆音色文件不存在，请重新克隆');
     const { language: _language, temperature: _temperature, precision: _precision, bgm, audio, playbackRate, ...draftRequest } = request;
     const draft = planDraft(draftRequest);
@@ -809,15 +1020,35 @@ if (cliMode) {
           warnings: [...(plan.warnings ?? []), warning].slice(0, 30) });
         await editPlans.save(plan);
       } finally { scenePlanner.dispose(); }
-      const model = await describeTtsModel(modelDir);
-      const voiceFingerprint = voiceProfile?.path ? createHash('sha256').update(await readFile(voiceProfile.path)).digest('hex') : 'preset';
+      let narrationSynthesizer: import('./composition/narration.js').NarrationSynthesizer;
+      let engineVersion: string;
+      let modelVersion: string;
+      if (externalTts.enabled) {
+        narrationSynthesizer = new ExternalTtsNarrationSynthesizer({
+          baseUrl: externalTts.baseUrl,
+          apiKey: externalTtsApiKey(),
+          model: externalTts.model,
+          voice: externalTts.voice,
+          speed: externalTts.speed,
+          ffmpegPath: configuredPaths().ffmpegPath,
+          request: modelRequest
+        });
+        engineVersion = 'external-openai-tts-v1';
+        modelVersion = `${externalTts.baseUrl}:${externalTts.model}:${externalTts.voice}:${externalTts.speed ?? 1}`;
+      } else {
+        const model = await describeTtsModel(modelDir);
+        const voiceFingerprint = voiceProfile?.path ? createHash('sha256').update(await readFile(voiceProfile.path)).digest('hex') : 'preset';
+        narrationSynthesizer = new QwenNarrationSynthesizer(engine, voiceProfile?.path ? new Map([[voiceProfile.id, voiceProfile.path]]) : undefined);
+        engineVersion = 'qwen3-tts-c-v0.2.1';
+        modelVersion = `${model.identity}:${voiceFingerprint}`;
+      }
       const narration = await new NarrationService({
         cacheDir: path.join(app.getPath('userData'), 'cache', 'narration'),
-        synthesizer: new QwenNarrationSynthesizer(engine, voiceProfile?.path ? new Map([[voiceProfile.id, voiceProfile.path]]) : undefined), probe: mediaProbe,
+        synthesizer: narrationSynthesizer, probe: mediaProbe,
         voice: {
           language: request.language ?? 'Chinese', temperature: request.temperature ?? 0.5,
           topK: 50, topP: 1, precision: request.precision ?? 'int8',
-          engineVersion: 'qwen3-tts-c-v0.2.1', modelVersion: `${model.identity}:${voiceFingerprint}`
+          engineVersion, modelVersion
         }
       }).generate(plan, path.join(projectDir, 'artifacts'), controller.signal, progress =>
         emit('narrating', 0.05 + progress.progress * 0.55, progress.message));
@@ -1173,7 +1404,16 @@ if (cliMode) {
     const resolved = path.resolve(target); if (!allowedShellPaths.has(resolved)) throw new Error('未授权的文件路径'); await shell.openPath(resolved);
   });
   createWindow();
-  if (modelDownloader) void modelDownloader.start();
+  if (modelDownloader) {
+    const automated = Boolean(process.env.VOXWEAVE_COMPOSITION_SMOKE_RESULT || process.env.VOXWEAVE_SMOKE_TEST === '1');
+    if (automated) {
+      void modelDownloader.start();
+    } else {
+      void modelDownloader.inspect().then(ready => {
+        if (!ready && settings.get('modelSetupConfirmed')) void modelDownloader?.start();
+      });
+    }
+  }
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

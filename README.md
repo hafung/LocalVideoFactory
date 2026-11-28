@@ -13,7 +13,7 @@
 [简体中文](README.md) · [English](README.en.md) · [下载 Windows 版](https://github.com/hafung/LocalVideoFactory/releases/latest) · [源码运行](docs/building.md) · [反馈建议](https://github.com/hafung/LocalVideoFactory/issues)
 
 [![CI](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml/badge.svg)](https://github.com/hafung/LocalVideoFactory/actions/workflows/ci.yml)
-[![Source](https://img.shields.io/badge/source-v0.2.12-d9ff69?labelColor=17181d)](package.json)
+[![Source](https://img.shields.io/badge/source-v0.2.13-d9ff69?labelColor=17181d)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows_x64-0078D4)](docs/building.md)
 [![Local AI](https://img.shields.io/badge/inference-local_CPU-6d5efc)](#本地-ai-创作栈)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)

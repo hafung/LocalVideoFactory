@@ -35,10 +35,36 @@ export interface SynthesisRequest {
 
 export interface EngineStatus {
   state: 'missing' | 'idle' | 'working' | 'error';
-  backend: 'native' | 'wsl' | 'none';
+  backend: 'native' | 'wsl' | 'external' | 'none';
   enginePath?: string;
   modelDir?: string;
   message: string;
+}
+
+export interface ExternalTtsStatus {
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  voice: string;
+  hasApiKey: boolean;
+  speed?: number;
+}
+
+export interface ExternalTtsConfigInput {
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  voice: string;
+  apiKey?: string;
+  clearApiKey?: boolean;
+  speed?: number;
+}
+
+export interface ExternalTtsTestResult {
+  ok: boolean;
+  message: string;
+  voices: string[];
+  models: string[];
 }
 
 export interface ProgressEvent {
@@ -72,12 +98,20 @@ export interface GenerateCompositionRequest extends DraftPlanRequest {
 export interface VoxWeaveApi {
   talkingHead: import('./talking-head.js').TalkingHeadApi;
   modelSetupStatus(): Promise<import('./model-downloads.js').ModelSetupStatus>;
+  startModelSetup(): Promise<void>;
   retryModelSetup(): Promise<void>;
   importLocalModels(): Promise<boolean>;
+  modelStorageInfo(): Promise<import('./model-downloads.js').ModelStorageInfo>;
+  setModelDownloadMirror(mirror: import('./model-downloads.js').ModelDownloadMirror): Promise<import('./model-downloads.js').ModelStorageInfo>;
+  chooseModelStorage(): Promise<import('./model-downloads.js').ModelStorageMigrationResult>;
+  openModelStorage(): Promise<void>;
   onModelSetupProgress(listener: (status: import('./model-downloads.js').ModelSetupStatus) => void): () => void;
   optionalModelStatus(): Promise<import('./model-downloads.js').OptionalModelStatus>;
   prepareOptionalModel(group: import('./model-downloads.js').OptionalModel): Promise<void>;
   onOptionalModelProgress(listener: (group: import('./model-downloads.js').OptionalModel, status: import('./model-downloads.js').ModelSetupStatus) => void): () => void;
+  externalTtsStatus(): Promise<ExternalTtsStatus>;
+  configureExternalTts(config: ExternalTtsConfigInput): Promise<ExternalTtsStatus>;
+  testExternalTts(config: ExternalTtsConfigInput): Promise<ExternalTtsTestResult>;
   getStatus(): Promise<EngineStatus>;
   configure(config: { enginePath?: string; modelDir?: string }): Promise<EngineStatus>;
   semanticStatus(): Promise<{ enginePath: string; modelPath: string; configured: boolean }>;

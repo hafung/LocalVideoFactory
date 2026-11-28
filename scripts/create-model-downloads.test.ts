@@ -19,7 +19,11 @@ it('builds a validated catalog from pinned models with one shared codec and pres
     const packed = catalog.manifests.find(item => item.path === `models/${folder}/manifest.json`)!;
     expect((packed.data.files as Record<string, { path: string }>)['speech_tokenizer/model.safetensors'].path).toBe('../qwen3-tts-tokenizer/model.safetensors');
   }
-  expect(catalog.archives[0].files.map(file => file.path)).toContain('models/sensevoice-small/model.int8.onnx');
+  expect(catalog.archives).toHaveLength(0);
+  expect(catalog.files.find(file => file.path === 'models/sensevoice-small/model.int8.onnx')).toMatchObject({
+    url: expect.stringContaining('huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/'),
+    mirrors: { modelscope: expect.stringContaining('modelscope.cn/models/') }
+  });
   expect(catalog.files.map(file => file.path)).toContain('semantic/model/Qwen3-Embedding-0.6B-Q8_0.gguf');
   const scene = JSON.parse(await readFile('resources/scene-planner/manifest.json', 'utf8'));
   for (const file of [scene.modelFile, scene.projectorFile]) {

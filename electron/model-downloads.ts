@@ -1,21 +1,89 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
-import { modelGroup, ModelDownloadsSchema, type ModelSetupStatus } from '../shared/model-downloads.js';
+import {
+  modelGroup,
+  ModelDownloadsSchema,
+  type ModelDownloadMirror,
+  type ModelSetupStatus
+} from '../shared/model-downloads.js';
 import { CLONE_TTS_MODEL, DEFAULT_TTS_MODEL } from './tts-model.js';
 
-type Descriptor = { path: string; sha256: string; size?: number };
+type CustomMirrors = Partial<Record<'hf-mirror' | 'modelscope', string>>;
+type Descriptor = { path: string; sha256: string; size?: number; mirrors?: CustomMirrors };
 type Verified = { sha256: string; size: number; mtimeMs: number };
+
+const MANAGED_MODEL_DIRS = ['models', 'semantic', 'scene-planner', '.downloads'] as const;
+
 export interface LocalModelSources {
   roots: readonly string[];
   narrationModelDir?: string;
   embeddingModelPath?: string;
   sceneModelPath?: string;
+}
+
+export interface MigrationProgress {
+  completedFiles: number;
+  totalFiles: number;
+  copiedBytes: number;
+  totalBytes: number;
+}
+
+export interface MigrationPlanResult {
+  migratedFiles: number;
+  migratedBytes: number;
+  cleanupOld: () => Promise<string[]>;
+}
+
+function rewriteHfMirror(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'huggingface.co') {
+      parsed.hostname = 'hf-mirror.com';
+      return parsed.href;
+    }
+  } catch { /* ignore invalid URLs */ }
+  return undefined;
+}
+
+function rewriteModelScope(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== 'huggingface.co') return undefined;
+    // https://huggingface.co/<owner>/<repo>/resolve/<rev>/<file...>
+    const match = /^\/([^/]+)\/([^/]+)\/resolve\/[^/]+\/(.+)$/u.exec(parsed.pathname);
+    if (!match) return undefined;
+    const [, owner, repo, filePath] = match;
+    return `https://www.modelscope.cn/models/${owner}/${repo}/resolve/master/${filePath}`;
+  } catch { /* ignore invalid URLs */ }
+  return undefined;
+}
+
+export function resolveDownloadUrls(
+  url: string,
+  mirror: ModelDownloadMirror = 'official',
+  customMirrors?: CustomMirrors
+): string[] {
+  const candidates: string[] = [];
+  const push = (value?: string) => {
+    if (value && !candidates.includes(value)) candidates.push(value);
+  };
+  if (mirror === 'modelscope') {
+    push(customMirrors?.modelscope ?? rewriteModelScope(url));
+    push(customMirrors?.['hf-mirror'] ?? rewriteHfMirror(url));
+    push(url);
+  } else if (mirror === 'hf-mirror') {
+    push(customMirrors?.['hf-mirror'] ?? rewriteHfMirror(url));
+    push(url);
+  } else {
+    push(url);
+  }
+  return candidates;
 }
 
 function localModelFiles(relative: string, sources: LocalModelSources): Set<string> {
@@ -51,14 +119,166 @@ async function hash(file: string, signal?: AbortSignal): Promise<string> {
   return digest.digest('hex');
 }
 
-// Keep incomplete downloads outside the installed application, so upgrades and
-// restarting the app can reuse them without administrator privileges.
-export async function downloadFile(url: string, target: string, signal: AbortSignal,
-  progress: (bytes: number, total?: number) => void, descriptor?: Descriptor,
-  request: typeof fetch = fetch, verifying?: () => void): Promise<void> {
+function isManagedEntry(name: string): boolean {
+  if ((MANAGED_MODEL_DIRS as readonly string[]).includes(name)) return true;
+  return /^\.verified(?:-[a-z0-9_-]+)?\.json$/u.test(name);
+}
+
+async function collectFiles(directory: string, relativePrefix = ''): Promise<Array<{ relative: string; size: number }>> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  const files: Array<{ relative: string; size: number }> = [];
+  for (const entry of entries) {
+    const rel = relativePrefix ? path.join(relativePrefix, entry.name) : entry.name;
+    const abs = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await collectFiles(abs, rel));
+    } else if (entry.isFile()) {
+      const info = await stat(abs).catch(() => undefined);
+      if (info?.isFile()) files.push({ relative: rel, size: info.size });
+    }
+  }
+  return files;
+}
+
+async function collectManagedFiles(root: string): Promise<{ files: Array<{ relative: string; size: number }>; topEntries: string[] }> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const files: Array<{ relative: string; size: number }> = [];
+  const topEntries: string[] = [];
+  for (const entry of entries) {
+    if (!isManagedEntry(entry.name)) continue;
+    topEntries.push(entry.name);
+    const abs = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await collectFiles(abs, entry.name));
+    } else if (entry.isFile()) {
+      const info = await stat(abs).catch(() => undefined);
+      if (info?.isFile()) files.push({ relative: entry.name, size: info.size });
+    }
+  }
+  return { files, topEntries };
+}
+
+export async function getDirectoryUsage(root: string): Promise<number> {
+  const { files } = await collectManagedFiles(root);
+  return files.reduce((sum, file) => sum + file.size, 0);
+}
+
+export async function getFreeSpace(targetPath: string): Promise<number | undefined> {
+  let current = path.resolve(targetPath);
+  for (let depth = 0; depth < 32; depth++) {
+    try {
+      const info = await statfs(current);
+      return Number(info.bavail) * Number(info.bsize);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return undefined;
+      current = parent;
+    }
+  }
+  return undefined;
+}
+
+function isNestedPath(parent: string, child: string): boolean {
+  const normalizedParent = process.platform === 'win32' ? path.resolve(parent).toLowerCase() : path.resolve(parent);
+  const normalizedChild = process.platform === 'win32' ? path.resolve(child).toLowerCase() : path.resolve(child);
+  if (normalizedParent === normalizedChild) return true;
+  const rel = path.relative(normalizedParent, normalizedChild);
+  return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+export async function migrateModelDirectory(
+  sourceDir: string,
+  targetDir: string,
+  onProgress?: (progress: MigrationProgress) => void
+): Promise<MigrationPlanResult> {
+  const resolvedSource = path.resolve(sourceDir);
+  const resolvedTarget = path.resolve(targetDir);
+  if (isNestedPath(resolvedSource, resolvedTarget) || isNestedPath(resolvedTarget, resolvedSource)) {
+    throw new Error('目标文件夹不能与当前模型目录相同或互相包含。');
+  }
+  await mkdir(resolvedTarget, { recursive: true });
+  // Verify target directory is writable before copying large files.
+  const probeFile = path.join(resolvedTarget, `.voxweave-write-check-${randomUUID()}`);
+  try {
+    await writeFile(probeFile, 'ok');
+  } catch (error) {
+    throw new Error(`目标文件夹不可写入：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  } finally {
+    await rm(probeFile, { force: true }).catch(() => undefined);
+  }
+
+  const { files, topEntries } = await collectManagedFiles(resolvedSource);
+  if (!files.length) {
+    return { migratedFiles: 0, migratedBytes: 0, cleanupOld: async () => [] };
+  }
+
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const freeBytes = await getFreeSpace(resolvedTarget);
+  const safetyBuffer = 64 * 1024 * 1024;
+  if (freeBytes !== undefined && freeBytes < totalBytes + safetyBuffer) {
+    const needGb = ((totalBytes + safetyBuffer) / 1_000_000_000).toFixed(1);
+    const haveGb = (freeBytes / 1_000_000_000).toFixed(1);
+    throw new Error(`目标磁盘空间不足：迁移需要约 ${needGb} GB，当前可用 ${haveGb} GB。`);
+  }
+
+  let completedFiles = 0;
+  let copiedBytes = 0;
+  onProgress?.({ completedFiles, totalFiles: files.length, copiedBytes, totalBytes });
+
+  for (const file of files) {
+    const src = path.join(resolvedSource, file.relative);
+    const dst = path.join(resolvedTarget, file.relative);
+    await mkdir(path.dirname(dst), { recursive: true });
+    const temporary = `${dst}.migrate-${randomUUID()}`;
+    try {
+      await pipeline(createReadStream(src), createWriteStream(temporary, { flags: 'wx' }));
+      const copied = await stat(temporary);
+      if (copied.size !== file.size) throw new Error(`迁移校验失败，文件大小不一致：${file.relative}`);
+      await rename(temporary, dst);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    completedFiles += 1;
+    copiedBytes += file.size;
+    onProgress?.({ completedFiles, totalFiles: files.length, copiedBytes, totalBytes });
+  }
+
+  const cleanupOld = async (): Promise<string[]> => {
+    const failed: string[] = [];
+    for (const entry of topEntries) {
+      try {
+        await rm(path.join(resolvedSource, entry), { recursive: true, force: true });
+      } catch {
+        failed.push(entry);
+      }
+    }
+    return failed;
+  };
+
+  return { migratedFiles: files.length, migratedBytes: totalBytes, cleanupOld };
+}
+
+class NonRetryableMirrorError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'NonRetryableMirrorError';
+  }
+}
+
+async function downloadSingleUrl(
+  url: string,
+  target: string,
+  signal: AbortSignal,
+  progress: (bytes: number, total?: number) => void,
+  descriptor?: Descriptor,
+  request: typeof fetch = fetch,
+  verifying?: () => void,
+  maxAttempts = 3
+): Promise<void> {
   await mkdir(path.dirname(target), { recursive: true });
   const partial = `${target}.part`;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     signal.throwIfAborted();
     const timeout = new AbortController();
     let timer = setTimeout(() => timeout.abort(new Error('模型下载超时')), 120_000);
@@ -68,16 +288,25 @@ export async function downloadFile(url: string, target: string, signal: AbortSig
       if (descriptor?.size === offset) {
         verifying?.();
         if (await hash(partial, signal) === descriptor.sha256) { await rename(partial, target); return; }
+        await rm(partial, { force: true });
+        offset = 0;
       }
-      const response = await request(url, { signal: AbortSignal.any([signal, timeout.signal]),
-        headers: offset ? { Range: `bytes=${offset}-`, 'Accept-Encoding': 'identity' } : { 'Accept-Encoding': 'identity' } });
+      const response = await request(url, {
+        signal: AbortSignal.any([signal, timeout.signal]),
+        headers: offset ? { Range: `bytes=${offset}-`, 'Accept-Encoding': 'identity' } : { 'Accept-Encoding': 'identity' }
+      });
       if (response.status === 416) {
         await response.body?.cancel();
         if (descriptor && await hash(partial, signal) === descriptor.sha256) { await rename(partial, target); return; }
         await rm(partial, { force: true });
         throw new Error('下载断点已失效，重新下载');
       }
-      if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`模型下载失败（HTTP ${response.status}）`); }
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        const message = `模型下载失败（HTTP ${response.status}）`;
+        if ([401, 403, 404, 410].includes(response.status)) throw new NonRetryableMirrorError(message);
+        throw new Error(message);
+      }
       if (response.status === 206) {
         const range = /^bytes (\d+)-(\d+)\/(\d+)$/u.exec(response.headers.get('content-range') ?? '');
         if (!range || Number(range[1]) !== offset) { await response.body.cancel(); throw new Error('服务器返回了错误的下载断点'); }
@@ -104,17 +333,51 @@ export async function downloadFile(url: string, target: string, signal: AbortSig
       if (descriptor) {
         verifying?.();
         if (await hash(partial, signal) !== descriptor.sha256) {
-          await rm(partial, { force: true }); throw new Error(`模型 SHA-256 校验失败：${descriptor.path}`);
+          await rm(partial, { force: true });
+          throw new NonRetryableMirrorError(`模型 SHA-256 校验失败：${descriptor.path}`);
         }
       }
       await rename(partial, target);
       return;
     } catch (error) {
       signal.throwIfAborted();
-      if (attempt === 2) throw error;
+      if (error instanceof NonRetryableMirrorError || attempt === maxAttempts - 1) throw error;
       await delay(500 * (attempt + 1), undefined, { signal });
     } finally { clearTimeout(timer); }
   }
+}
+
+// Keep incomplete downloads outside the installed application, so upgrades and
+// restarting the app can reuse them without administrator privileges.
+export async function downloadFile(
+  url: string | readonly string[],
+  target: string,
+  signal: AbortSignal,
+  progress: (bytes: number, total?: number) => void,
+  descriptor?: Descriptor,
+  request: typeof fetch = fetch,
+  verifying?: () => void
+): Promise<void> {
+  const candidates = Array.isArray(url) ? [...url] : [url];
+  let lastError: unknown;
+  for (const [index, candidate] of candidates.entries()) {
+    const isLast = index === candidates.length - 1;
+    try {
+      await downloadSingleUrl(candidate, target, signal, progress, descriptor, request, verifying, isLast ? 3 : 2);
+      return;
+    } catch (error) {
+      signal.throwIfAborted();
+      lastError = error;
+      if (!isLast) {
+        // Clear any mismatched partial bytes when switching mirrors.
+        if (error instanceof NonRetryableMirrorError) {
+          await rm(`${target}.part`, { force: true }).catch(() => undefined);
+        }
+        continue;
+      }
+    }
+  }
+  throw lastError;
 }
 
 export class ModelDownloader {
@@ -124,12 +387,67 @@ export class ModelDownloader {
   private verified: Record<string, Verified> = {};
   private lastPublished = 0;
   private readonly verifiedPath: string;
-  constructor(private catalogPath: string, readonly root: string,
+  constructor(
+    private catalogPath: string,
+    readonly root: string,
     private publish: (status: ModelSetupStatus) => void,
     private request: typeof fetch = fetch,
     private localSources: () => LocalModelSources = () => ({ roots: [] }),
-    private group?: ReturnType<typeof modelGroup>) {
+    private group?: ReturnType<typeof modelGroup>,
+    private getMirror: () => ModelDownloadMirror = () => 'official'
+  ) {
     this.verifiedPath = path.join(root, group && group !== 'basic' ? `.verified-${group}.json` : '.verified.json');
+  }
+
+  /**
+   * Read-only check to determine whether this model group is already fully
+   * installed in `root`. Does not create files or start network requests.
+   */
+  async inspect(): Promise<boolean> {
+    if (this.running) return this.status.state === 'ready';
+    this.update({ state: 'checking', message: '正在检查本地模型…', activity: undefined, completedFiles: 0, downloadedBytes: 0, totalBytes: undefined });
+    try {
+      const catalog = ModelDownloadsSchema.parse(JSON.parse(await readFile(this.catalogPath, 'utf8')));
+      const includes = (file: { path: string }) => !this.group || modelGroup(file.path) === this.group;
+      const files = catalog.files.filter(includes);
+      const archives = catalog.archives.map(archive => ({ ...archive, files: archive.files.filter(includes) }))
+        .filter(archive => archive.files.length > 0);
+      const allFiles: Descriptor[] = [...files, ...archives.flatMap(archive => archive.files)];
+      if (!allFiles.length) throw new Error('安装包缺少这项功能的下载清单');
+      this.verified = await readFile(this.verifiedPath, 'utf8').then(data => {
+        const parsed: unknown = JSON.parse(data);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, Verified> : {};
+      }).catch(() => ({}));
+      const signal = new AbortController().signal;
+      let completedFiles = 0;
+      for (const file of allFiles) {
+        if (await this.valid(file, signal)) completedFiles += 1;
+      }
+      if (completedFiles === allFiles.length) {
+        for (const manifest of catalog.manifests.filter(includes)) {
+          const manifestPath = path.join(this.root, manifest.path);
+          if (!await stat(manifestPath).catch(() => undefined)) {
+            await mkdir(path.dirname(manifestPath), { recursive: true });
+            await writeFile(manifestPath, JSON.stringify(manifest.data, null, 2) + '\n');
+          }
+        }
+        this.update({ state: 'ready', activity: undefined, message: '模型已就绪，可离线创作。', completedFiles, totalFiles: allFiles.length, downloadedBytes: 0, totalBytes: undefined });
+        return true;
+      }
+      this.update({
+        state: 'setup',
+        activity: undefined,
+        message: '请选择模型保存位置和下载源，然后开始下载基础模型。',
+        completedFiles,
+        totalFiles: allFiles.length,
+        downloadedBytes: 0,
+        totalBytes: undefined
+      });
+      return false;
+    } catch (error) {
+      this.update({ state: 'error', message: `${error instanceof Error ? error.message : String(error)}。请检查安装文件后重试。` });
+      return false;
+    }
   }
 
   start(): Promise<void> {
@@ -147,6 +465,12 @@ export class ModelDownloader {
       await this.running;
     }
     await this.start();
+  }
+  async stop(): Promise<void> {
+    if (this.running) {
+      this.controller.abort();
+      await this.running;
+    }
   }
   get active(): boolean { return !!this.running; }
   cancel(): void { this.controller.abort(); }
@@ -225,15 +549,16 @@ export class ModelDownloader {
     const missingFiles = await this.missingFiles(files, sources, signal);
     const missingArchives = [];
     for (const archive of archives) {
-      const files = await this.missingFiles(archive.files, sources, signal);
-      if (files.length) missingArchives.push({ ...archive, files });
+      const archiveMissing = await this.missingFiles(archive.files, sources, signal);
+      if (archiveMissing.length) missingArchives.push({ ...archive, files: archiveMissing });
     }
     for (const file of missingFiles) {
       signal.throwIfAborted();
       const message = `正在下载 ${file.path.split('/').slice(-2).join('/')}…`;
       this.update({ state: 'downloading', activity: undefined, message, downloadedBytes: 0, totalBytes: file.size });
       try {
-        await downloadFile(file.url, path.join(this.root, file.path), signal,
+        const urls = resolveDownloadUrls(file.url, this.getMirror(), file.mirrors);
+        await downloadFile(urls, path.join(this.root, file.path), signal,
           (downloadedBytes, totalBytes) => this.update({ activity: undefined, downloadedBytes, totalBytes }), file, this.request,
           () => this.update({ activity: 'verifying', message: `正在校验 ${file.path.split('/').at(-1)}…` }));
       } catch (error) {
@@ -246,8 +571,11 @@ export class ModelDownloader {
       try {
         const target = path.join(this.root, '.downloads', archive.path);
         this.update({ state: 'downloading', activity: undefined, message: '正在下载 SenseVoice 字幕模型…', downloadedBytes: 0, totalBytes: undefined });
-        if (!await stat(target).catch(() => undefined)) await downloadFile(archive.url, target, signal,
-          (downloadedBytes, totalBytes) => this.update({ downloadedBytes, totalBytes }), undefined, this.request);
+        if (!await stat(target).catch(() => undefined)) {
+          const urls = resolveDownloadUrls(archive.url, this.getMirror(), archive.mirrors);
+          await downloadFile(urls, target, signal,
+            (downloadedBytes, totalBytes) => this.update({ downloadedBytes, totalBytes }), undefined, this.request);
+        }
         const temporary = await mkdtemp(path.join(this.root, '.extract-'));
         try {
           this.update({ activity: 'extracting', message: '正在解压并校验 SenseVoice 字幕模型…' });
@@ -266,7 +594,11 @@ export class ModelDownloader {
           await rm(target, { force: true });
         }
       } catch (error) {
-        throw new Error(`${archive.path}：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('bzip2')) {
+          throw new Error(`${archive.path}：系统自带 tar.exe 缺少 bzip2 解压组件，请升级到新版帧舟或手动导入模型（原始错误：${message}）`, { cause: error });
+        }
+        throw new Error(`${archive.path}：${message}`, { cause: error });
       }
       for (const file of archive.files) await this.record(file);
     }
